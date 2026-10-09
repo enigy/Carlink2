@@ -329,28 +329,32 @@ object ManeuverMapper {
         state: NavigationState,
         context: Context,
     ): Maneuver {
-        // Step hold ([201]): on a CarPlay route, the primary step's icon is decided once when
-        // the step starts and kept until the step changes — distance ticks never swap it.
-        // Without this the one in-step change was the static fallback being replaced by the
-        // composed bitmap when the background compose finished. AA (no route plan) is left
-        // alone: its NAVI_IMAGE can land just after the maneuver change, and holding there
-        // would pin the previous step's icon for a whole step.
-        val route = com.carlink.navigation.compose.ComposedIconStore.currentRoute()
-        val stepKey =
-            route?.let { StepKey(state.maneuverType, state.roadName, state.turnSide, state.exitAngle) }
-        val held = heldManeuver
-        if (stepKey != null && route === heldRoute && stepKey == heldStepKey && held != null &&
-            heldBitmap?.isRecycled != true
-        ) {
-            return held
-        }
-
         // Composer path (D16): when ComposedIconStore.enabled and a route is loaded, look
         // up a pre-composed bitmap keyed by (cpType, roadName) for the current step. If
         // present, use it as a one-shot AA-style override and fall through to the existing
         // builder. Composer is OFF by default — flip via ComposedIconStore.setEnabled(true).
         val composed = com.carlink.navigation.compose.ComposedIconStore
             .lookup(state.maneuverType, state.roadName)
+
+        // Step hold ([201], fixed in [203]): on a CarPlay route the primary step's icon is kept
+        // until the step changes, so distance ticks never swap it — with ONE exception: a static
+        // fallback is upgraded once the composed icon for that step is ready. [201] keyed the hold
+        // on the route object and never upgraded, so every mid-drive route re-send pinned the
+        // static fallback for the rest of the step. AA (no route plan) is left alone: its
+        // NAVI_IMAGE can land just after the maneuver change, and holding there would pin the
+        // previous step's icon for a whole step.
+        val stepKey =
+            com.carlink.navigation.compose.ComposedIconStore.currentRoute()?.let {
+                StepKey(state.maneuverType, state.roadName, state.turnSide, state.exitAngle)
+            }
+        val held = heldManeuver
+        val heldIcon = heldBitmap
+        if (stepKey != null && stepKey == heldStepKey && held != null) {
+            val heldUsable = heldIcon == null || !heldIcon.isRecycled
+            val upgrade = heldIcon == null && composed != null
+            if (heldUsable && !upgrade) return held
+        }
+
         val maneuver =
             if (composed != null) {
                 buildManeuverForType(
@@ -365,17 +369,17 @@ object ManeuverMapper {
             }
 
         if (stepKey != null) {
-            heldRoute = route
+            val event = if (stepKey == heldStepKey) "Upgraded" else "New step"
             heldStepKey = stepKey
             heldManeuver = maneuver
             heldBitmap = composed
             logInfo(
-                "[ICON_STEP] New step cpType=${state.maneuverType} road=\"${state.roadName}\" — icon " +
+                "[ICON_STEP] $event cpType=${state.maneuverType} road=\"${state.roadName}\" " +
+                    "exitAngle=${state.exitAngle} — icon " +
                     if (composed != null) "composed ${composed.width}x${composed.height}" else "static fallback",
                 tag = Logger.Tags.NAVI,
             )
         } else {
-            heldRoute = null
             heldStepKey = null
             heldManeuver = null
             heldBitmap = null
@@ -383,7 +387,7 @@ object ManeuverMapper {
         return maneuver
     }
 
-    /** Identity of the step being approached, within one route plan. */
+    /** Identity of the step being approached. Deliberately not tied to the route object. */
     private data class StepKey(
         val cpType: Int,
         val roadName: String?,
@@ -392,7 +396,6 @@ object ManeuverMapper {
     )
 
     // Step-hold state for [buildManeuver]. Same single-caller rule as [maneuverCache].
-    private var heldRoute: Iap2RouteData? = null
     private var heldStepKey: StepKey? = null
     private var heldManeuver: Maneuver? = null
 

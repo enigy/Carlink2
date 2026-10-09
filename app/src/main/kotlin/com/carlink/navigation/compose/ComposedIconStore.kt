@@ -32,8 +32,9 @@ import java.util.concurrent.atomic.AtomicLong
  * 14.6s of render on a CPU-constrained head unit) would otherwise stall video for the whole
  * burst. Per-maneuver cost is ~5ms on a desktop emulator but ~80ms on a saturated Intel Atom.
  *
- * Key design: store keyed by `(cpManeuverType, postManeuverRoadName)` — matches the fields
- * present in per-step NaviJSON events. Falls back to type-only match if road name is empty
+ * Key design: steps are matched by `(cpManeuverType, postManeuverRoadName)` — the fields
+ * present in per-step NaviJSON events — and the matched maneuver's bitmap is stored under
+ * that pair plus its junction geometry ([203]). Falls back to type-only match if road name is empty
  * or absent. The cursor-walk pattern (see [Iap2RouteData.findStepIndex]) handles duplicate
  * (type, road) pairs by remembering the last-matched index and walking forward from there.
  *
@@ -132,10 +133,16 @@ object ComposedIconStore {
     /** Read-only accessor for NavigationStateManager (Tier C route-anchored state derivation). */
     internal fun currentRoute(): Iap2RouteData? = routeData
 
+    // Geometry is part of the key ([203]): turns are drawn from their own junction angles, so
+    // two right turns onto the same road at different junctions are different pictures.
     private data class IconKey(
         val cpManeuverType: Int,
         val roadName: String,
-    )
+        val exitAngle: Int?,
+        val entryAngles: List<Int>,
+    ) {
+        constructor(m: Iap2ManeuverData) : this(m.cpManeuverType, m.postManeuverRoadName, m.exitAngle, m.entryAngles)
+    }
 
     /**
      * Parse an `_iap2m` hex string from a NaviJSON message and dispatch icon composition.
@@ -151,6 +158,14 @@ object ComposedIconStore {
     fun populateFromIap2m(iap2mHex: String): Int? {
         val parsed = Iap2RouteParser.parse(iap2mHex) ?: return null
         if (parsed.maneuvers.isEmpty()) return null
+
+        // The phone re-sends the maneuver list mid-drive. An unchanged list keeps the current
+        // route object and icons: no multi-second recompose with icons missing, and
+        // NavigationStateManager doesn't see a "new route" (which resets its cursor state).
+        if (parsed == routeData) {
+            logNavi { "[COMPOSER] Route re-sent unchanged (${parsed.maneuvers.size} maneuvers) — keeping icons" }
+            return 0
+        }
 
         // On the caller's (USB read) thread: publish parse-side state only, then return.
         // routeData must be visible synchronously because NavigationStateManager.onNaviJson —
@@ -208,10 +223,11 @@ object ComposedIconStore {
                 logNavi { "[COMPOSER] compose gen=$gen superseded after $composed icons — aborted" }
                 return
             }
-            val key = IconKey(maneuver.cpManeuverType, maneuver.postManeuverRoadName)
+            val key = IconKey(maneuver)
             if (newMap.containsKey(key)) continue // dedup BEFORE render — skip already-built icon
             try {
-                val composedIcon = ManeuverComposer.compose(maneuver)
+                // null = the static drawable is more specific for this type; store nothing.
+                val composedIcon = ManeuverComposer.compose(maneuver) ?: continue
                 val bmp = IconBitmapRenderer.render(ICON_SIZE_PX, composedIcon)
                 newMap[key] = bmp
                 sink?.invoke(maneuver, bmp)
@@ -272,7 +288,7 @@ object ComposedIconStore {
 
         cursorIndex = foundIdx
         val maneuver = route.maneuvers[foundIdx]
-        val bmp = iconByKey[IconKey(maneuver.cpManeuverType, maneuver.postManeuverRoadName)]
+        val bmp = iconByKey[IconKey(maneuver)]
         logNavi {
             "[COMPOSER] Lookup matched idx=$foundIdx cpType=$cpManeuverType road=\"$roadName\" -> ${if (bmp != null) "bitmap[${bmp.width}x${bmp.height}]" else "no bitmap (compose failed earlier)"}"
         }

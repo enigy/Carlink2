@@ -1360,3 +1360,23 @@
    - With [201]'s step hold, the first step keeps its fallback icon (no mid-step swap) and later steps use composed
      icons at the same size.
    - Affected: navigation/compose/IconBitmapRenderer.kt, app/build.gradle.kts.
+
+[203] :: HUD turn icons drawn from the junction Apple sends — real exit angle + side roads; step-hold upgrade fix.
+   - On-truck (v202): size and flicker fixed, but icons are generic. Cause: only roundabouts used the iAP2 junction
+     geometry. Every left/right/sharp/slight turn drew the same 90° arrow; start-of-route drew the arrival pin
+     (PROCEED_TO_ROUTE is byte-identical to ARRIVAL).
+   - New JunctionTurnComposer: entry stem → rounded corner through the wire exit angle (0x000b) → exit leg → Apple's
+     arrowhead, plus grey stubs for the junction's other arms (0x000a), like roundabout spokes. At 90° with no side
+     roads it reproduces Apple's RIGHT_TURN exactly. Sharp turns lengthen the exit so the arrowhead clears the stem;
+     past 160° it draws a U-turn (mirrored for right-hand exits).
+   - ManeuverComposer: types 0/3/5 (straight) and 1/2/20/21/47-50 (turns) use the wire angle when it agrees with the
+     type (same side, ≥4°; straight ≤30°), else a nominal angle — sharp ±135, slight ±45, end-of-road a T. Plain 1/2
+     without geometry keep Apple's paths. 11/24/25 return null so the more specific static drawable is shown.
+   - ComposedIconStore keys bitmaps by (type, road, exit angle, other arms); an unchanged route re-send keeps the
+     current route and icons instead of recomposing.
+   - Step hold fix: [201] keyed the hold on the route object and never upgraded, so after any mid-drive route re-send
+     the static fallback stayed for the rest of the step. Hold is now keyed by the step only, and a static fallback is
+     upgraded once to the composed icon when it becomes ready. [ICON_STEP] logs "New step"/"Upgraded" + exitAngle.
+   - UNTESTED: not compiled in the authoring environment (no Android SDK); not run on hardware.
+   - Affected: navigation/compose/JunctionTurnComposer.kt (new), ManeuverComposer.kt, ComposedIconStore.kt,
+     navigation/ManeuverMapper.kt, app/build.gradle.kts.

@@ -48,7 +48,6 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SecondaryTabRow
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
@@ -56,7 +55,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -82,7 +80,6 @@ import com.carlink.util.WindowMetricsCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlin.math.roundToInt
 
 /**
  * Adapter Configuration Dialog
@@ -144,14 +141,6 @@ fun AdapterConfigurationDialog(
     )
     val savedClusterNavigation by adapterConfigPreference.clusterNavigationFlow.collectAsStateWithLifecycle(
         initialValue = false,
-    )
-    // Direction-cue (turn-direction text on the cluster) — live app-side display setting,
-    // saved immediately on change (not part of the staged Apply/restart flow below).
-    val savedDirectionCueEnabled by adapterConfigPreference.directionCueEnabledFlow.collectAsStateWithLifecycle(
-        initialValue = AdapterConfigPreference.DIRECTION_CUE_ENABLED_DEFAULT,
-    )
-    val savedDirectionThresholdFeet by adapterConfigPreference.directionCueThresholdFeetFlow.collectAsStateWithLifecycle(
-        initialValue = AdapterConfigPreference.DIRECTION_CUE_THRESHOLD_FEET_DEFAULT,
     )
 
     // Get usable display dimensions based on current display mode
@@ -746,88 +735,6 @@ fun AdapterConfigurationDialog(
                                     style = MaterialTheme.typography.bodySmall,
                                     color = colorScheme.primary,
                                 )
-                            }
-
-                            // Cluster Turn-Direction Text (live app-side display setting)
-                            ConfigurationOptionCard(
-                                title = "Turn-Direction Text",
-                                description = "Prepend the turn direction (e.g. \"Turn left\") to the cluster road name as you approach each turn.",
-                                icon = Icons.Default.Map,
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                ) {
-                                    AudioSourceButton(
-                                        label = "Off",
-                                        icon = Icons.Default.Map,
-                                        isSelected = !savedDirectionCueEnabled,
-                                        onClick = {
-                                            scope.launch { adapterConfigPreference.setDirectionCueEnabled(false) }
-                                        },
-                                        modifier = Modifier.weight(1f),
-                                    )
-                                    AudioSourceButton(
-                                        label = "Enabled",
-                                        icon = Icons.Default.Map,
-                                        isSelected = savedDirectionCueEnabled,
-                                        onClick = {
-                                            scope.launch { adapterConfigPreference.setDirectionCueEnabled(true) }
-                                        },
-                                        modifier = Modifier.weight(1f),
-                                    )
-                                }
-                                if (savedDirectionCueEnabled) {
-                                    Spacer(modifier = Modifier.height(12.dp))
-                                    // Local slider position, re-seeded whenever the saved value changes.
-                                    var sliderFeet by remember(savedDirectionThresholdFeet) {
-                                        mutableFloatStateOf(savedDirectionThresholdFeet.toFloat())
-                                    }
-                                    val feet = sliderFeet.roundToInt()
-                                    val distanceLabel =
-                                        if (feet >= 1000) "%.2f mi".format(feet / 5280f) else "$feet ft"
-                                    Text(
-                                        text = "Show direction within: $distanceLabel",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = colorScheme.primary,
-                                    )
-                                    Slider(
-                                        value = sliderFeet,
-                                        onValueChange = { sliderFeet = it },
-                                        valueRange =
-                                            AdapterConfigPreference.DIRECTION_CUE_THRESHOLD_FEET_MIN.toFloat()..
-                                                AdapterConfigPreference.DIRECTION_CUE_THRESHOLD_FEET_MAX.toFloat(),
-                                        onValueChangeFinished = {
-                                            // Round to the nearest 100 ft for tidy stored values.
-                                            val rounded = (sliderFeet / 100f).roundToInt() * 100
-                                            scope.launch {
-                                                adapterConfigPreference.setDirectionCueThresholdFeet(rounded)
-                                            }
-                                        },
-                                    )
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                    ) {
-                                        Text(
-                                            text = "500 ft",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = colorScheme.onSurfaceVariant,
-                                        )
-                                        Text(
-                                            text = "2 mi",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = colorScheme.onSurfaceVariant,
-                                        )
-                                    }
-                                } else {
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    Text(
-                                        text = "Off — cluster shows the plain road name.",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = colorScheme.primary,
-                                    )
-                                }
                             }
 
                             // WiFi Band Configuration

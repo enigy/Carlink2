@@ -1319,7 +1319,8 @@
      dialog; any bridge error → direct. Boot permission probe skipped when the bridge is installed. <queries> for the bridge
      package + icon authority. Flavors removed; ClusterIconShimProvider removed from the app.
    - Dropped from the fork (per user): USB dialog tweaks [196], [171], [169], [165] late-grant part, [162] permission parts;
-     HUD icon workarounds [162] ICON_PROBE + ComposedIconStore default flip. Kept: loading screen/background [175]-[181],
+     HUD icon workarounds [162] ICON_PROBE + ComposedIconStore default flip + turn-direction cue text (directionText,
+     composeCue, Turn-Direction Text setting). Kept: loading screen/background [175]-[181],
      launcher icon [182], everything else.
    - Diagnostics: [BRIDGE] status line on every connect (handler config, user id, per-device perm, session, icon counters).
    - UNTESTED: not compiled in the authoring environment (no Android SDK); not run on hardware.

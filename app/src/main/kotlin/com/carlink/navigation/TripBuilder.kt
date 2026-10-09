@@ -6,10 +6,8 @@ import androidx.car.app.navigation.model.Step
 import androidx.car.app.navigation.model.TravelEstimate
 import androidx.car.app.navigation.model.Trip
 import com.carlink.logging.logNavi
-import com.carlink.ui.settings.AdapterConfigPreference
 import java.time.Duration
 import java.time.ZonedDateTime
-import kotlin.math.roundToInt
 
 /**
  * Shared Trip builder for cluster navigation display.
@@ -32,63 +30,11 @@ import kotlin.math.roundToInt
  * No tests. Add coverage if step/ETA semantics change.
  */
 object TripBuilder {
-    /** Separator between the direction phrase and the road name in the cluster cue. */
-    private const val CUE_SEPARATOR = " · "
-
-    /** Feet → meters (remainDistance is in meters; the user-facing threshold is in feet). */
-    private const val FEET_TO_METERS = 0.3048
-
-    /**
-     * Compose the cluster cue text. When the direction-cue feature is [enabled] and the
-     * maneuver is within [thresholdMeters], prepend a short turn-direction phrase (e.g.
-     * "Turn left") to the road name so the DIRECTION is conveyed even when the maneuver icon
-     * can't reach the cluster (Play builds — see ManeuverMapper.directionText KDoc). Otherwise
-     * the road name is shown unmodified.
-     *
-     * - Feature disabled, or distance above threshold → just the road name (no prefix).
-     * - No direction phrase for this maneuver → just the road name.
-     * - No road name → just the direction phrase.
-     * - Road already starts with the phrase → don't duplicate (guards against firmware that
-     *   embeds instruction text in NaviRoadName).
-     */
-    private fun composeCue(
-        cpType: Int,
-        turnSide: Int,
-        roadName: String?,
-        remainDistanceMeters: Int,
-        enabled: Boolean,
-        thresholdMeters: Int,
-    ): String? {
-        val road = roadName?.takeIf { it.isNotEmpty() }
-        // Only prepend the direction when enabled and the turn is imminent (< threshold).
-        if (!enabled || remainDistanceMeters !in 0..thresholdMeters) return road
-        // Never prepend when the cue is already an arrival instruction (e.g. Apple Maps'
-        // "Arrive on your left/right") — our prefix would be redundant with what the
-        // projection already shows for the final maneuver.
-        if (road != null && road.trimStart().startsWith("arrive", ignoreCase = true)) return road
-        val direction = ManeuverMapper.directionText(cpType, turnSide)
-        return when {
-            direction == null -> road
-            road == null -> direction
-            road.startsWith(direction, ignoreCase = true) -> road
-            else -> "$direction$CUE_SEPARATOR$road"
-        }
-    }
-
     fun buildTrip(
         state: NavigationState,
         context: Context,
     ): Trip {
         val tripBuilder = Trip.Builder()
-
-        // Direction-cue settings — read live from the sync cache (cheap; this runs at most a
-        // few times/sec, debounced, off the hot video path). Toggling the setting takes effect
-        // on the next cluster update with no reinit.
-        val cuePrefs = AdapterConfigPreference.getInstance(context)
-        val directionCueEnabled = cuePrefs.getDirectionCueEnabledSync()
-        val directionThresholdMeters =
-            (cuePrefs.getDirectionCueThresholdFeetSync() * FEET_TO_METERS).roundToInt()
-
         // Single ETA reused across the current step, the next step, and the destination.
         // Only the destination estimate is actually "arrival time" — step ETAs are the
         // same value because the adapter doesn't expose per-step timing. See class KDoc.
@@ -105,14 +51,7 @@ object TripBuilder {
         val maneuver = ManeuverMapper.buildManeuver(state, context)
         val stepBuilder = Step.Builder()
         stepBuilder.setManeuver(maneuver)
-        composeCue(
-            state.maneuverType,
-            state.turnSide,
-            state.roadName,
-            state.remainDistance,
-            directionCueEnabled,
-            directionThresholdMeters,
-        )?.let { stepBuilder.setCue(it) }
+        state.roadName?.let { stepBuilder.setCue(it) }
 
         val stepEstimate =
             TravelEstimate

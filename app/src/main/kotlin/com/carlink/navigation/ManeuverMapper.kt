@@ -285,64 +285,6 @@ object ManeuverMapper {
     }
 
     /**
-     * Short, human-readable turn-direction phrase for a CPManeuverType — e.g. "Turn left",
-     * "Keep right", "Roundabout, exit 2". Intended to be prepended to the cluster cue
-     * (road name) so the turn DIRECTION is conveyed in TEXT even when the maneuver icon
-     * can't be delivered (e.g. the USB bridge, which hosts the cluster icon authority, is not
-     * installed — see issue #6 / cluster_navigation.md). Returns null for
-     * maneuvers where a prefix adds nothing over the road name itself (no-turn, straight,
-     * follow-road, depart — the latter usually already reads "Start on …").
-     *
-     * Mapping mirrors [mapManeuverType] / [ManeuverIconRenderer] cpType semantics; keep the
-     * three in sync if the protocol adds codes.
-     */
-    fun directionText(
-        cpType: Int,
-        turnSide: Int = 0,
-    ): String? =
-        when (cpType) {
-            0 -> null // noTurn
-            1 -> "Turn left"
-            2 -> "Turn right"
-            3 -> null // straight ahead — road name alone reads fine
-            4 -> "Make a U-turn"
-            5 -> null // followRoad
-            6 -> "Enter roundabout"
-            7 -> "Exit roundabout"
-            8 -> "Take the exit"
-            9 -> "Merge"
-            10 -> "Arrive"
-            11 -> null // depart — cue usually already says "Start on …"
-            12 -> "Arrive"
-            13 -> "Keep left"
-            14 -> "Keep right"
-            15 -> "Take the ferry"
-            16 -> "Exit the ferry"
-            17 -> "Change ferry"
-            18 -> "Make a U-turn"
-            19 -> "U-turn at roundabout"
-            20 -> "Turn left"
-            21 -> "Turn right"
-            22 -> "Exit left"
-            23 -> "Exit right"
-            // 24/25 (arrive left/right): no prefix — Apple Maps already renders an
-            // "Arrive on your left/right" instruction, so prepending ours is redundant.
-            24 -> null
-            25 -> null
-            26 -> "Make a U-turn"
-            27 -> "Arrive"
-            in 28..46 -> "Roundabout, exit ${cpType - 27}"
-            47 -> "Sharp left"
-            48 -> "Sharp right"
-            49 -> "Slight left"
-            50 -> "Slight right"
-            51 -> "Take the fork"
-            52 -> "Keep left"
-            53 -> "Keep right"
-            else -> null
-        }
-
-    /**
      * Convert a driver-relative iAP2/AA exit angle into the androidx swept-angle convention
      * expected by [Maneuver.Builder.setRoundaboutExitAngle].
      *

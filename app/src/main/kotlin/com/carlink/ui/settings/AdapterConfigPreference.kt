@@ -330,17 +330,6 @@ class AdapterConfigPreference private constructor(
         // Cluster navigation: true = show CarPlay turn-by-turn on instrument cluster
         private val KEY_CLUSTER_NAVIGATION = booleanPreferencesKey("cluster_navigation_enabled")
 
-        // Direction-cue: prepend the turn direction (e.g. "Turn left") to the cluster road-name
-        // text when within the threshold distance of the maneuver. App-side display setting only.
-        private val KEY_DIRECTION_CUE_ENABLED = booleanPreferencesKey("direction_cue_enabled")
-        private val KEY_DIRECTION_CUE_THRESHOLD_FEET = intPreferencesKey("direction_cue_threshold_feet")
-
-        /** Direction-cue defaults and slider bounds (feet). 2640 ft = 0.5 mi; 10560 ft = 2 mi. */
-        const val DIRECTION_CUE_ENABLED_DEFAULT = true
-        const val DIRECTION_CUE_THRESHOLD_FEET_DEFAULT = 2640
-        const val DIRECTION_CUE_THRESHOLD_FEET_MIN = 500
-        const val DIRECTION_CUE_THRESHOLD_FEET_MAX = 10560
-
         // Initialization tracking
         private val KEY_HAS_COMPLETED_FIRST_INIT = booleanPreferencesKey("has_completed_first_init")
         private val KEY_LAST_INIT_VERSION_CODE = longPreferencesKey("last_init_version_code")
@@ -358,8 +347,6 @@ class AdapterConfigPreference private constructor(
         private const val SYNC_CACHE_KEY_HAND_DRIVE = "hand_drive_mode"
         private const val SYNC_CACHE_KEY_GPS_FORWARDING = "gps_forwarding"
         private const val SYNC_CACHE_KEY_CLUSTER_NAVIGATION = "cluster_navigation_enabled"
-        private const val SYNC_CACHE_KEY_DIRECTION_CUE_ENABLED = "direction_cue_enabled"
-        private const val SYNC_CACHE_KEY_DIRECTION_CUE_THRESHOLD_FEET = "direction_cue_threshold_feet"
         private const val SYNC_CACHE_KEY_HAS_COMPLETED_FIRST_INIT = "has_completed_first_init"
         private const val SYNC_CACHE_KEY_LAST_INIT_VERSION_CODE = "last_init_version_code"
         private const val SYNC_CACHE_KEY_PENDING_CHANGES = "pending_changes"
@@ -789,53 +776,6 @@ class AdapterConfigPreference private constructor(
         }
     }
 
-    // ── Direction-cue (turn-direction text prepended to the cluster road name) ──────────
-    // Pure app-side display setting; read live by TripBuilder on each cluster update — no
-    // adapter reinit or app restart needed when changed.
-
-    val directionCueEnabledFlow: Flow<Boolean> =
-        dataStore.data.map { preferences ->
-            preferences[KEY_DIRECTION_CUE_ENABLED] ?: DIRECTION_CUE_ENABLED_DEFAULT
-        }
-
-    fun getDirectionCueEnabledSync(): Boolean =
-        syncCache.getBoolean(SYNC_CACHE_KEY_DIRECTION_CUE_ENABLED, DIRECTION_CUE_ENABLED_DEFAULT)
-
-    suspend fun setDirectionCueEnabled(enabled: Boolean) {
-        try {
-            dataStore.edit { preferences ->
-                preferences[KEY_DIRECTION_CUE_ENABLED] = enabled
-            }
-            syncCache.edit().putBoolean(SYNC_CACHE_KEY_DIRECTION_CUE_ENABLED, enabled).apply()
-            logInfo("Direction-cue enabled saved: $enabled", tag = "AdapterConfig")
-        } catch (e: IOException) {
-            logError("Failed to save direction-cue enabled: $e", tag = "AdapterConfig")
-            throw e
-        }
-    }
-
-    val directionCueThresholdFeetFlow: Flow<Int> =
-        dataStore.data.map { preferences ->
-            preferences[KEY_DIRECTION_CUE_THRESHOLD_FEET] ?: DIRECTION_CUE_THRESHOLD_FEET_DEFAULT
-        }
-
-    fun getDirectionCueThresholdFeetSync(): Int =
-        syncCache.getInt(SYNC_CACHE_KEY_DIRECTION_CUE_THRESHOLD_FEET, DIRECTION_CUE_THRESHOLD_FEET_DEFAULT)
-
-    suspend fun setDirectionCueThresholdFeet(feet: Int) {
-        val clamped = feet.coerceIn(DIRECTION_CUE_THRESHOLD_FEET_MIN, DIRECTION_CUE_THRESHOLD_FEET_MAX)
-        try {
-            dataStore.edit { preferences ->
-                preferences[KEY_DIRECTION_CUE_THRESHOLD_FEET] = clamped
-            }
-            syncCache.edit().putInt(SYNC_CACHE_KEY_DIRECTION_CUE_THRESHOLD_FEET, clamped).apply()
-            logInfo("Direction-cue threshold saved: $clamped ft", tag = "AdapterConfig")
-        } catch (e: IOException) {
-            logError("Failed to save direction-cue threshold: $e", tag = "AdapterConfig")
-            throw e
-        }
-    }
-
     /**
      * Apply the cluster service component enabled/disabled state based on preference.
      * Call this early in Activity.onCreate() so the state is set before Templates Host discovers it.
@@ -954,8 +894,6 @@ class AdapterConfigPreference private constructor(
                 preferences.remove(KEY_HAND_DRIVE)
                 preferences.remove(KEY_GPS_FORWARDING)
                 preferences.remove(KEY_CLUSTER_NAVIGATION)
-                preferences.remove(KEY_DIRECTION_CUE_ENABLED)
-                preferences.remove(KEY_DIRECTION_CUE_THRESHOLD_FEET)
                 preferences.remove(KEY_HAS_COMPLETED_FIRST_INIT)
                 preferences.remove(KEY_LAST_INIT_VERSION_CODE)
                 preferences.remove(KEY_PENDING_CHANGES)
@@ -974,8 +912,6 @@ class AdapterConfigPreference private constructor(
                     remove(SYNC_CACHE_KEY_HAND_DRIVE)
                     remove(SYNC_CACHE_KEY_GPS_FORWARDING)
                     remove(SYNC_CACHE_KEY_CLUSTER_NAVIGATION)
-                    remove(SYNC_CACHE_KEY_DIRECTION_CUE_ENABLED)
-                    remove(SYNC_CACHE_KEY_DIRECTION_CUE_THRESHOLD_FEET)
                     remove(SYNC_CACHE_KEY_HAS_COMPLETED_FIRST_INIT)
                     remove(SYNC_CACHE_KEY_LAST_INIT_VERSION_CODE)
                     remove(SYNC_CACHE_KEY_PENDING_CHANGES)

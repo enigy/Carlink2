@@ -16,21 +16,14 @@ import com.carlink.logging.Logger
 import com.carlink.logging.logDebug
 import com.carlink.logging.logWarn
 import com.carlink.protocol.KnownDevices
-import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.coroutines.resume
 
 private const val ACTION_USB_PERMISSION = "com.carlink.USB_PERMISSION"
-
-// How long ONE caller waits on the system permission dialog before giving up its wait.
-// 180s (was 60s): since [196] a timeout no longer costs the user their dialog — the dialog
-// stays up and the next attempt re-attaches to it instead of raising a new one — so a longer
-// wait is free, and it keeps the app's own state machine from cycling pointlessly while the
-// user is walking up to the truck. Cancellation is driven by the DETACH broadcast, not this
-// clock; this is only a safety cap so the state machine can't wedge.
-private const val PERMISSION_WAIT_MS = 180_000L
 private const val MAX_PAYLOAD_SIZE = 2 * 1024 * 1024 // 2MB — reject corrupted headers
 // 15s chosen with headroom over the adapter's ~10s heartbeat window (see
 // documents/reference/heartbeat_analysis.md). If no data arrives at all inside this window
@@ -48,147 +41,6 @@ private const val INITIAL_RESPONSE_TIMEOUT_MS = 15_000L
 // "stuck loop, needs Reset" spiral. Patience here lets the adapter keep trying to reach the
 // phone on the existing connection instead.
 private const val MID_SESSION_SILENCE_MS = 60_000L
-
-/**
- * One outstanding system USB-permission dialog, shared by every connection attempt targeting
- * the same device instance ([key] is the `/dev/bus/usb/...` path, which is unique per
- * enumeration).
- *
- * Held process-globally (see [UsbDeviceWrapper.pendingPermission]) because the dialog outlives
- * any single [UsbDeviceWrapper] — the reconnect loop builds a fresh wrapper per attempt. Owning
- * the listeners here rather than on the requesting coroutine also means a grant or denial is
- * still observed however long after the requesting attempt gave up, closing the blind spot that
- * the old 15s post-cancellation grace left (a denial landing later was never logged at all).
- */
-internal class PendingPermissionRequest(
-    val key: String,
-    private val appContext: Context,
-    private val log: (String) -> Unit,
-) {
-    /** Completes once — with the user's answer, or false if the device went away. */
-    private val result = CompletableDeferred<Boolean>()
-
-    /**
-     * Connection attempts currently blocked on this dialog. A waiter giving up does NOT settle
-     * [result] (the dialog stays up), so this counter — not the deferred's state — is what tells
-     * a grant whether anyone is still there to receive it.
-     */
-    private val waiters = AtomicInteger(0)
-
-    private var permissionReceiver: BroadcastReceiver? = null
-    private var detachReceiver: BroadcastReceiver? = null
-
-    /** Wait up to [timeoutMs] for an answer. Null means this caller gave up; the dialog lives on. */
-    suspend fun await(timeoutMs: Long): Boolean? {
-        waiters.incrementAndGet()
-        try {
-            return withTimeoutOrNull(timeoutMs) { result.await() }
-        } finally {
-            waiters.decrementAndGet()
-        }
-    }
-
-    /** Register the grant/deny and detach listeners. Call once, before raising the dialog. */
-    fun arm() {
-        permissionReceiver =
-            object : BroadcastReceiver() {
-                override fun onReceive(
-                    ctx: Context,
-                    intent: Intent,
-                ) {
-                    if (ACTION_USB_PERMISSION != intent.action) return
-                    val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
-                    resolve(granted, if (granted) "granted" else "denied")
-                }
-            }
-
-        // RECEIVER_NOT_EXPORTED — only this app sends the permission broadcast. The detach
-        // action is a protected system broadcast, which is delivered regardless of the flag
-        // (same pattern as MainActivity.registerUsbDetachReceiver).
-        ContextCompat.registerReceiver(
-            appContext,
-            permissionReceiver,
-            IntentFilter(ACTION_USB_PERMISSION),
-            ContextCompat.RECEIVER_NOT_EXPORTED,
-        )
-
-        // The DEVICE cancels this wait, not a clock. A Reset press, ignition-off, or the
-        // adapter's own reset watchdog re-enumerates the CPC200 — at which point the dialog
-        // authorises an instance that no longer exists and waiting on it is pointless.
-        detachReceiver =
-            object : BroadcastReceiver() {
-                override fun onReceive(
-                    ctx: Context,
-                    intent: Intent,
-                ) {
-                    if (UsbManager.ACTION_USB_DEVICE_DETACHED != intent.action) return
-                    val detached =
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                            intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
-                        } else {
-                            @Suppress("DEPRECATION")
-                            intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
-                        }
-                    if (detached?.deviceName == key) resolve(false, "device detached")
-                }
-            }
-
-        ContextCompat.registerReceiver(
-            appContext,
-            detachReceiver,
-            IntentFilter(UsbManager.ACTION_USB_DEVICE_DETACHED),
-            ContextCompat.RECEIVER_NOT_EXPORTED,
-        )
-    }
-
-    /**
-     * Settle this request and unregister. A GRANT that lands after every waiter has given up
-     * still kicks a fresh connection via [UsbDeviceWrapper.onLatePermissionGrant], so the app
-     * self-recovers instead of sitting idle until a manual Reset Device.
-     */
-    private fun resolve(
-        granted: Boolean,
-        reason: String,
-    ) {
-        val late = waiters.get() == 0
-        unregister()
-        UsbDeviceWrapper.clearPending(this)
-
-        if (!result.complete(granted)) {
-            // Already settled by a concurrent broadcast — nothing further to do.
-            return
-        }
-
-        log("USB permission $reason for $key" + if (late) " (late — no attempt waiting)" else "")
-
-        if (granted && late) {
-            try {
-                UsbDeviceWrapper.onLatePermissionGrant?.invoke()
-            } catch (e: Exception) {
-                log("onLatePermissionGrant handler error: ${e.message}")
-            }
-        }
-    }
-
-    /** Abandon this request without an answer (the adapter re-enumerated under us). */
-    fun dispose(reason: String) {
-        unregister()
-        UsbDeviceWrapper.clearPending(this)
-        if (result.complete(false)) log("Dropping stale USB permission dialog for $key — $reason")
-    }
-
-    private fun unregister() {
-        listOfNotNull(permissionReceiver, detachReceiver).forEach { receiver ->
-            try {
-                appContext.unregisterReceiver(receiver)
-            } catch (_: IllegalArgumentException) {
-                // Already unregistered
-            }
-        }
-        permissionReceiver = null
-        detachReceiver = null
-    }
-}
 
 /**
  * USB Device Wrapper for Carlinkit Adapter Communication.
@@ -262,92 +114,86 @@ class UsbDeviceWrapper(
     fun hasPermission(): Boolean = usbManager.hasPermission(device)
 
     /**
-     * Request USB permission from the user, showing the system dialog if it isn't already held.
+     * Request USB permission from the user.
+     * This will show a system dialog asking the user to grant permission.
      *
-     * ONE dialog per device instance. The reconnect loop calls this on every attempt while
-     * disconnected; before [196] each call fired its own `UsbManager.requestPermission()`, so an
-     * unanswered dialog was churned out from under the user on a ~90s cycle. Observed
-     * 2026-07-28: ten requests across 55 minutes, seven of them 60s timeouts against the SAME
-     * device instance (/dev/bus/usb/001/029, attached the whole time) before a tap finally
-     * landed. The cluster showed no turn-by-turn for that entire window simply because the
-     * adapter was never opened — and each Reset press made it worse, re-enumerating the adapter
-     * (017 → 023 → 029) and destroying the pending dialog with it.
-     *
-     * Now the first caller arms the dialog; every later caller targeting the same device
-     * instance awaits that same dialog. A wait timing out does NOT tear the dialog down — it
-     * stays on screen, and the next attempt re-attaches to it.
-     *
-     * Cancellation is driven by the DEVICE, not a clock: a detach broadcast for this instance
-     * resolves the wait immediately, because the dialog authorises a device that no longer
-     * exists. See [PendingPermissionRequest].
-     *
-     * @param timeoutMs How long THIS caller waits. See [PERMISSION_WAIT_MS].
-     * @return true if granted; false if denied, detached, or this caller's wait expired
+     * @param timeoutMs Timeout in milliseconds to wait for user response
+     * @return true if permission was granted, false if denied or timeout
      */
-    suspend fun requestPermission(timeoutMs: Long = PERMISSION_WAIT_MS): Boolean {
+    suspend fun requestPermission(timeoutMs: Long = 30_000L): Boolean {
         if (usbManager.hasPermission(device)) {
             log("Permission already granted for ${device.deviceName}")
-            // Permission can land without our dialog being the one that delivered it (the
-            // MediaBrowserService boot probe, or a "use by default" association). Drop any
-            // dialog we're still holding for this device so the slot and its receivers don't
-            // linger — nothing will ever resolve them.
-            synchronized(permissionLock) { pendingPermission?.takeIf { it.key == device.deviceName } }
-                ?.dispose("permission already held")
             return true
         }
 
-        // Register on the APPLICATION context (not the Activity context) so the listeners
-        // survive Activity teardown and the connection coroutine's cancellation.
-        val appContext = context.applicationContext
-        val key = device.deviceName
+        log("Requesting USB permission for ${device.deviceName}...")
 
-        val pending =
-            synchronized(permissionLock) {
-                pendingPermission?.let { current ->
-                    if (current.key == key) {
-                        log("Permission dialog already showing for $key — waiting on it (no new prompt)")
-                        return@synchronized current
+        return withTimeoutOrNull(timeoutMs) {
+            suspendCancellableCoroutine { continuation ->
+                val receiver =
+                    object : BroadcastReceiver() {
+                        override fun onReceive(
+                            ctx: Context,
+                            intent: Intent,
+                        ) {
+                            if (ACTION_USB_PERMISSION == intent.action) {
+                                try {
+                                    context.unregisterReceiver(this)
+                                } catch (_: IllegalArgumentException) {
+                                    // Already unregistered
+                                }
+
+                                val granted =
+                                    intent.getBooleanExtra(
+                                        UsbManager.EXTRA_PERMISSION_GRANTED,
+                                        false,
+                                    )
+                                log("USB permission ${if (granted) "granted" else "denied"}")
+
+                                if (continuation.isActive) {
+                                    continuation.resume(granted)
+                                }
+                            }
+                        }
                     }
-                    // Different instance: the adapter re-enumerated, so the old dialog is for a
-                    // device that is gone. Drop it before arming a new one.
-                    current.dispose("superseded by $key")
-                }
 
-                log("Requesting USB permission for $key...")
-                PendingPermissionRequest(key, appContext, ::log).also { fresh ->
-                    pendingPermission = fresh
-                    fresh.arm()
-                    usbManager.requestPermission(device, buildPermissionIntent(appContext))
+                // Register receiver using ContextCompat for API compatibility
+                // RECEIVER_NOT_EXPORTED ensures only this app can send permission broadcasts
+                ContextCompat.registerReceiver(
+                    context,
+                    receiver,
+                    IntentFilter(ACTION_USB_PERMISSION),
+                    ContextCompat.RECEIVER_NOT_EXPORTED,
+                )
+
+                // Create pending intent with explicit Intent (package set) for Android 12+ security.
+                // FLAG_MUTABLE (API 31+) is required because UsbManager injects EXTRA_DEVICE /
+                // EXTRA_PERMISSION_GRANTED into the intent at send time. Pre-31 PendingIntents are
+                // mutable by default, so the flag is omitted there (it does not exist below API 31).
+                val mutableFlag =
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
+                val pendingIntent =
+                    PendingIntent.getBroadcast(
+                        context,
+                        0,
+                        Intent(ACTION_USB_PERMISSION).apply { setPackage(context.packageName) },
+                        mutableFlag or PendingIntent.FLAG_UPDATE_CURRENT,
+                    )
+                usbManager.requestPermission(device, pendingIntent)
+
+                // Cleanup on cancellation
+                continuation.invokeOnCancellation {
+                    try {
+                        context.unregisterReceiver(receiver)
+                    } catch (_: IllegalArgumentException) {
+                        // Already unregistered
+                    }
                 }
             }
-
-        return pending.await(timeoutMs) ?: run {
-            // Deliberately does NOT dispose: the dialog is still on screen and the listeners are
-            // still armed. This caller simply stopped waiting; the next attempt picks it back up,
-            // and a grant arriving meanwhile still fires [onLatePermissionGrant].
-            log("USB permission wait expired after ${timeoutMs / 1000}s — dialog still showing for $key")
+        } ?: run {
+            log("USB permission request timed out")
             false
         }
-    }
-
-    /**
-     * Build the PendingIntent the system fires with the user's answer.
-     *
-     * Explicit Intent (package set) for Android 12+ security. FLAG_MUTABLE (API 31+) is required
-     * because UsbManager injects EXTRA_DEVICE / EXTRA_PERMISSION_GRANTED at send time; pre-31
-     * PendingIntents are mutable by default, so the flag is omitted there (it does not exist).
-     * The request code packs VID into the high 16 bits and PID into the low 16 so PendingIntents
-     * for different device pairs in KnownDevices never collide (both fields are 16-bit).
-     */
-    private fun buildPermissionIntent(appContext: Context): PendingIntent {
-        val mutableFlag =
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
-        return PendingIntent.getBroadcast(
-            appContext,
-            (vendorId shl 16) or productId,
-            Intent(ACTION_USB_PERMISSION).apply { setPackage(appContext.packageName) },
-            mutableFlag or PendingIntent.FLAG_UPDATE_CURRENT,
-        )
     }
 
     /**
@@ -372,25 +218,6 @@ class UsbDeviceWrapper(
         if (connection == null) {
             log("Failed to open device connection")
             return false
-        }
-
-        // DIAGNOSTIC: log the USB descriptor identity now that the device is open (permission
-        // is held). Android only PERSISTS the "always allow" USB grant for devices that expose
-        // a serial number; a null/blank serial means the grant is session-only and the user is
-        // re-prompted on every re-enumeration (cold boot) / process restart. `persistable`
-        // tells us whether remembering the permission is even possible for this adapter.
-        try {
-            val serial = device.serialNumber
-            log(
-                "[USB_IDENTITY] name=${device.deviceName} " +
-                    "VID=0x${vendorId.toString(16)} PID=0x${productId.toString(16)} " +
-                    "serial=${serial ?: "<null>"} " +
-                    "mfr=${device.manufacturerName ?: "<null>"} " +
-                    "product=${device.productName ?: "<null>"} " +
-                    "persistable=${!serial.isNullOrBlank()}",
-            )
-        } catch (e: SecurityException) {
-            log("[USB_IDENTITY] serial read denied (no permission): ${e.message}")
         }
 
         // Find and claim the bulk transfer interface
@@ -948,41 +775,6 @@ class UsbDeviceWrapper(
     }
 
     companion object {
-        /**
-         * Invoked when the user grants USB permission AFTER the requesting connection attempt
-         * has already ended (a "late" grant). Set once by [com.carlink.CarlinkManager] to kick a
-         * fresh connection so the app self-recovers instead of sitting idle until a manual Reset
-         * Device. Process-global (the permission receiver outlives the per-connection wrapper);
-         * the handler must be idempotent and re-check connection state itself.
-         */
-        @Volatile
-        var onLatePermissionGrant: (() -> Unit)? = null
-
-        /**
-         * Guards [pendingPermission]. Connection attempts can start from several coroutines
-         * (initial connect, reconnect loop, late-grant kick), and the check-or-create must be
-         * atomic or two of them raise two dialogs — the exact churn [196] removes.
-         */
-        private val permissionLock = Any()
-
-        /**
-         * The single in-flight system permission dialog, if any. One slot, not a map: the app
-         * only ever talks to one adapter, and a new device instance means the previous dialog
-         * is stale by definition.
-         */
-        private var pendingPermission: PendingPermissionRequest? = null
-
-        /** True while a system permission dialog is on screen awaiting the user's answer. */
-        val isPermissionDialogShowing: Boolean
-            get() = synchronized(permissionLock) { pendingPermission != null }
-
-        /** Release the slot once [request] has settled. No-op if it was already replaced. */
-        internal fun clearPending(request: PendingPermissionRequest) {
-            synchronized(permissionLock) {
-                if (pendingPermission === request) pendingPermission = null
-            }
-        }
-
         /**
          * Find all connected Carlinkit devices.
          */

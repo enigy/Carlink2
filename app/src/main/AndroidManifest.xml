@@ -88,7 +88,6 @@
             android:name=".MainActivity"
             android:exported="true"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
-            android:directBootAware="true"
             android:hardwareAccelerated="true"
             android:launchMode="singleTop"
             android:theme="@style/Theme.CarlinkNative.Fullscreen"
@@ -114,13 +113,7 @@
             <!-- USB Device Attachment. This is the persistence anchor for the user's
                  "Use by default for this USB device" choice — the receiver variant was tried
                  (v156) and did NOT auto-grant on gminfo37, so we keep the Activity filter as
-                 the documented association point.
-                 v171: added android:directBootAware="true" on the activity (above) per
-                 emteria.com/blog/remember-android-usb-permissions — an automotive head unit may
-                 deliver USB_DEVICE_ATTACHED only to direct-boot-aware components (pre-unlock /
-                 sleep-wake locked state), which would explain why the attach intent has NEVER
-                 reached us (0 in all logs). The persistent grant is keyed on VID/PID, so if this
-                 makes the attach + "use by default" fire, it survives the truck-off re-enumeration. -->
+                 the documented association point. -->
             <intent-filter>
                 <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
             </intent-filter>

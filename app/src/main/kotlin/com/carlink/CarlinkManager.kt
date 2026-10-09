@@ -139,37 +139,6 @@ class CarlinkManager(
             com.carlink.navigation.compose.ComposedIconStore.setBitmapComposeEnabled(false)
             NavigationStateManager.setClusterEnumOnly(true)
         }
-
-        // Self-recover from a LATE USB-permission grant: if the user taps "Allow" after the
-        // connection attempt's dialog timed out, kick a fresh connect instead of leaving the
-        // app idle until a manual Reset Device.
-        UsbDeviceWrapper.onLatePermissionGrant = { onLatePermissionGranted() }
-    }
-
-    /**
-     * Handler for a USB-permission grant that arrived after the requesting attempt had ended.
-     * Permission is now held, so trigger a fresh connect — but only if we're actually idle and
-     * the head unit is on (don't disturb a live session or churn while the truck is off).
-     * Runs on the receiver's thread; hop to [scope] (main) for the state-machine work.
-     */
-    private fun onLatePermissionGranted() {
-        scope.launch {
-            // Don't disturb a session that actually owns the device. adapterDriver != null means
-            // we're live (STREAMING/DEVICE_CONNECTED) or genuinely mid-handshake — leave it alone.
-            // adapterDriver == null means we're either DISCONNECTED or STRANDED at CONNECTING (a
-            // start() whose permission request was cancelled before it opened the device — see
-            // [connect]); either way a fresh attempt is the right move.
-            if (adapterDriver != null) return@launch
-            if (suspendedForScreenOff || !isScreenInteractive()) return@launch
-            logInfo(
-                "[USB] Late permission grant — restarting connect (state=$state, no live driver)",
-                tag = Logger.Tags.USB,
-            )
-            // Clear a stranded CONNECTING so scheduleReconnect()'s state==DISCONNECTED gate passes.
-            if (state != State.DISCONNECTED) setState(State.DISCONNECTED)
-            reconnectAttempts = 0
-            scheduleReconnect()
-        }
     }
 
     // Config can be updated when actual surface dimensions are known
@@ -1017,30 +986,10 @@ class CarlinkManager(
             tag = Logger.Tags.VIDEO,
         )
 
-        // If the USB permission isn't already held, the system shows a dialog and
-        // openWithPermission() blocks until the user responds (or the timeout). Tell the user
-        // EXACTLY what to do so they tap "Allow" instead of assuming it's stuck and hitting
-        // Reset Device — which tears this attempt down, cancels the in-flight permission request,
-        // and forces a recovery (observed 2026-06-07: a premature Reset 7s into launch).
-        if (!device.hasPermission()) {
-            setStatusText("Allow USB access — tap “Allow” on the dialog")
-        }
-
         if (!device.openWithPermission()) {
             logError("Failed to open USB device", tag = Logger.Tags.USB)
             setState(State.DISCONNECTED)
-            // Don't cry "denied" when the dialog is still sitting there unanswered — that reads
-            // as a dead end and is what sends the user to the Reset button, which re-enumerates
-            // the adapter and destroys the very dialog they need to tap (2026-07-28 log: 55
-            // minutes lost this way). Since [196] the dialog survives our wait expiring, so the
-            // honest prompt is to keep pointing at it.
-            setStatusText(
-                if (UsbDeviceWrapper.isPermissionDialogShowing) {
-                    "Waiting for USB access — tap “Allow” on the dialog"
-                } else {
-                    "USB permission denied"
-                },
-            )
+            setStatusText("USB permission denied")
             return
         }
 

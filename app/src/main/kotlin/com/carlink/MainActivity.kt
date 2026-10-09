@@ -280,10 +280,6 @@ class MainActivity : ComponentActivity() {
         // Initialize logging
         initializeLogging()
 
-        // Diagnostic (v171): did we cold-launch FROM a USB attach intent, and does it carry a
-        // pre-granted device? With directBootAware now set, the attach intent may finally reach us.
-        logUsbAttachIntent(intent, "onCreate")
-
         // Apply cluster service component state before Templates Host discovers it
         AdapterConfigPreference.getInstance(this).applyClusterComponentState(this)
 
@@ -398,11 +394,6 @@ class MainActivity : ComponentActivity() {
         // The "bring back" REORDER_TO_FRONT intent from launchCarAppActivity()
         // also arrives here (singleTop) — must NOT re-trigger the launch cycle.
         if (intent.action == UsbManager.ACTION_USB_DEVICE_ATTACHED) {
-            // Diagnostic (v171): the attach intent reaching us at all is the whole game — it has
-            // never appeared in any log. If directBootAware unblocked it, this tells us, and whether
-            // the device arrives already permission-granted (the implicit grant we'd then harvest).
-            logUsbAttachIntent(intent, "onNewIntent")
-
             // Only launch cluster binding if cluster navigation is enabled
             if (AdapterConfigPreference.getInstance(this).getClusterNavigationSync()) {
                 logInfo("[LIFECYCLE] onNewIntent: USB_DEVICE_ATTACHED — re-launching cluster binding", tag = "MAIN")
@@ -418,36 +409,6 @@ class MainActivity : ComponentActivity() {
                 manager.connect()
             }
         }
-    }
-
-    /**
-     * Diagnostic for the USB_DEVICE_ATTACHED delivery question (v171).
-     *
-     * The attach intent has NEVER reached this app on gminfo37 (0 occurrences across every log),
-     * which is why USB permission can't persist — the system "use by default" association is only
-     * created via the attach-resolver flow. We just added android:directBootAware="true"; if that
-     * unblocks delivery, this logs it and — critically — whether the UsbDevice handed over in
-     * EXTRA_DEVICE already carries permission (the implicit grant an attach-launched app receives).
-     * If implicitPermission=true ever shows up here, we can harvest that device directly and skip
-     * the dialog entirely.
-     */
-    private fun logUsbAttachIntent(intent: Intent?, source: String) {
-        if (intent?.action != UsbManager.ACTION_USB_DEVICE_ATTACHED) return
-        val device: UsbDevice? =
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
-            } else {
-                @Suppress("DEPRECATION")
-                intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
-            }
-        val usbManager = getSystemService(Context.USB_SERVICE) as? UsbManager
-        val implicitPermission = device?.let { usbManager?.hasPermission(it) }
-        logInfo(
-            "[USB_ATTACH] $source: USB_DEVICE_ATTACHED reached app — device=${device?.deviceName} " +
-                "vid=0x${device?.vendorId?.toString(16)} pid=0x${device?.productId?.toString(16)} " +
-                "implicitPermission=$implicitPermission",
-            tag = "MAIN",
-        )
     }
 
     override fun onDestroy() {

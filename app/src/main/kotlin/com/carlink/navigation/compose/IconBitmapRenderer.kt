@@ -44,8 +44,18 @@ internal object IconBitmapRenderer {
      *
      * Prior 96pt viewport CLIPPED the LeftTurn arrowhead (verified 2026-05-26 in Robolectric
      * test); 160pt fixes it.
+     *
+     * [201] 160 → 80: the 160pt sizing predates per-icon bbox centering (below), when one
+     * viewport had to hold every arrow around Apple's (28, 28) origin. Centered on its own
+     * bbox, each icon only needs room for its own extent (~42-56pt for turns/merges/U-turns),
+     * so 160 left the glyph filling about a third of the bitmap and the HUD drew it small.
+     * Halving the viewport doubles every glyph. Icons wider than [MAX_FILL] of it (roundabouts,
+     * ~84pt) are fitted instead of clipped — see [render].
      */
-    private const val VIEWPORT_SIZE = 160.0f
+    private const val VIEWPORT_SIZE = 80.0f
+
+    /** Largest share of the bitmap an icon's bbox may fill before it is shrunk to fit. */
+    private const val MAX_FILL = 0.94f
     /**
      * Apple's nominal canvas is centered on (28, 28) but the actual icon bbox is NOT
      * always centered there. e.g. LEFT_TURN bbox center is at x=-21.6 (49pt left of canvas
@@ -85,8 +95,6 @@ internal object IconBitmapRenderer {
         val canvas = Canvas(bmp)
         if (canvasBackground != Color.TRANSPARENT) canvas.drawColor(canvasBackground)
 
-        val scale = size.toFloat() / VIEWPORT_SIZE
-
         val bbox = RectF()
         icon.foreground.computeBounds(bbox, true)
         icon.background?.let {
@@ -96,11 +104,17 @@ internal object IconBitmapRenderer {
         }
         val centerX = (bbox.left + bbox.right) / 2.0f
         val centerY = (bbox.top + bbox.bottom) / 2.0f
-        val viewportCenter = VIEWPORT_SIZE / 2.0f
+
+        // Uniform scale keeps stroke weight identical across icons; only an icon too big for
+        // the viewport (a roundabout) gets its own, smaller scale so it isn't clipped.
+        val extent = maxOf(bbox.width(), bbox.height())
+        val viewport = if (extent > VIEWPORT_SIZE * MAX_FILL) extent / MAX_FILL else VIEWPORT_SIZE
+        val scale = size.toFloat() / viewport
 
         val matrix = Matrix().apply {
-            setTranslate(viewportCenter - centerX, viewportCenter - centerY)
+            setTranslate(-centerX, -centerY)
             postScale(scale, scale)
+            postTranslate(size / 2.0f, size / 2.0f)
         }
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
 

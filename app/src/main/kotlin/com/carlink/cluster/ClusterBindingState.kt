@@ -37,4 +37,11 @@ object ClusterBindingState {
      */
     @Volatile
     var lastRelayElapsedMs: Long = 0L
+
+    /**
+     * Successful `updateTrip()` relays since process start. [NAV_HEALTH] logs it next to the
+     * bridge's icon-provider counters: inserts climbing in step with relays mean the Templates
+     * Host re-sends the maneuver icon on every distance tick ([201] HUD flicker).
+     */
+    val relayCount = java.util.concurrent.atomic.AtomicLong()
 }

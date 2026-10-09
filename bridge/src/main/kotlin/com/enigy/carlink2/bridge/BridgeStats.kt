@@ -21,6 +21,11 @@ internal object BridgeStats {
     val writeErrors = AtomicLong()
 
     val iconInserts = AtomicLong()
+
+    // inserts vs distinct contents vs distinct host iconIds tells whether the host re-sends an
+    // unchanged icon, and whether it mints a new iconId for it each time ([201] HUD flicker).
+    val iconDistinctContents = AtomicLong()
+    val iconDistinctIds = AtomicLong()
     val iconQueryHits = AtomicLong()
     val iconQueryMisses = AtomicLong()
     val iconOpens = AtomicLong()
@@ -43,7 +48,8 @@ internal object BridgeStats {
         return "in=${messagesIn.get()}msg/${bytesIn.get()}B " +
             "drop(hdr=${droppedHeaders.get()} partial=${droppedPartial.get()}) " +
             "out=${writes.get()} outErr=${writeErrors.get()} " +
-            "icons(insert=${iconInserts.get()} query=${iconQueryHits.get()}/${iconQueryMisses.get()}miss " +
+            "icons(insert=${iconInserts.get()} pictures=${iconDistinctContents.get()} ids=${iconDistinctIds.get()} " +
+            "query=${iconQueryHits.get()}/${iconQueryMisses.get()}miss " +
             "open=${iconOpens.get()}/${iconOpenMisses.get()}miss) " +
             "events=[$recent]"
     }

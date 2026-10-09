@@ -274,6 +274,7 @@ class ClusterMainSession : Session() {
                 // Nav-output heartbeat for the [NAV_HEALTH] diagnostic. See
                 // [ClusterBindingState.lastRelayElapsedMs].
                 ClusterBindingState.lastRelayElapsedMs = SystemClock.elapsedRealtime()
+                ClusterBindingState.relayCount.incrementAndGet()
                 logNavi {
                     "[CLUSTER_MAIN] Trip relayed: maneuver=${state.maneuverType}, " +
                         "dist=${state.remainDistance}m, road=${state.roadName}" +

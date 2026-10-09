@@ -51,6 +51,11 @@ The display app needs only package visibility (`<queries>` in its manifest) so t
 check runs once per process, so if you install the bridge while Carlink2 is running,
 restart Carlink2.
 
+Icon URIs are content-addressed (bridge v2, [201]): `content://…/img/png_<sha256 prefix>`.
+Every `updateTrip` re-sends the icon and the host re-inserts it, so keying the URI on the
+picture rather than the host's iconId means the HUD only sees a new URI when the picture
+changes. On the app side, the primary step's icon is held until the step changes.
+
 ## Data path
 
 ```
@@ -136,6 +141,8 @@ What to check in a log:
 | `user=` | `10` | the bridge is bound in another user |
 | `perm=` on the 1314:xxxx device | `true` | grant missed (see known risk); expect fallback |
 | `icons(insert=…)` during nav | climbing | the host isn't reaching the bridge's provider |
+| `insert` vs `pictures` vs `ids` (v2) | `pictures` ≈ steps driven | `ids` ≈ `insert` ⇒ host mints an id per tick (v2's URIs cover it) |
+| `open` vs `relays=` in `[NAV_HEALTH]` | `open` ≪ `relays` | the HUD re-reads the icon every tick |
 | `[NAVI_ICON] Cluster icon provider available via android.car.usb.handler` | present at startup | the `<queries>` entry or the bridge is missing |
 
 Other lines: `[BRIDGE] Adapter … opened through the bridge`, `[BRIDGE] Bridge has no

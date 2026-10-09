@@ -41,6 +41,13 @@ object CarlinkBridge {
     private fun bridgeIntent(): Intent =
         Intent().setComponent(ComponentName(BridgeContract.BRIDGE_PACKAGE, BridgeContract.BRIDGE_SERVICE_CLASS))
 
+    /**
+     * The bridge's status line if a binding is already up; never binds. A blocking Binder
+     * call — keep it off the main thread and hot paths.
+     */
+    fun statusIfBound(): String? =
+        service?.takeIf { it.asBinder().isBinderAlive }?.let { runCatching { it.status }.getOrNull() }
+
     /** Needs the `<queries>` entry for the bridge package in the manifest. */
     fun isInstalled(context: Context): Boolean = context.packageManager.resolveService(bridgeIntent(), 0) != null
 

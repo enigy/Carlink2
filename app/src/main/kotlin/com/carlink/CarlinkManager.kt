@@ -53,6 +53,7 @@ import com.carlink.ui.settings.AdapterConfigPreference
 import com.carlink.ui.settings.MicSourceConfig
 import com.carlink.ui.settings.WiFiBandConfig
 import com.carlink.usb.BridgeUsbTransport
+import com.carlink.usb.CarlinkBridge
 import com.carlink.usb.UsbDeviceWrapper
 import com.carlink.usb.UsbTransport
 import com.carlink.util.AppExecutors
@@ -3549,9 +3550,20 @@ class CarlinkManager(
                             "navInAgoMs=${if (navIn == 0L) -1 else nowHealth - navIn} " +
                             "relayOutAgoMs=${if (relayOut == 0L) -1 else nowHealth - relayOut} " +
                             "navActive=${NavigationStateManager.state.value.isActive} " +
-                            "clusterSessionAlive=${ClusterBindingState.sessionAlive}",
+                            "clusterSessionAlive=${ClusterBindingState.sessionAlive} " +
+                            "relays=${ClusterBindingState.relayCount.get()}",
                         tag = Logger.Tags.NAVI,
                     )
+                    // Bridge icon-provider counters alongside relays=: how often the Templates Host
+                    // inserts icons and the HUD side reads them ([201] flicker). Binder call, so off
+                    // this video thread.
+                    if (NavigationStateManager.state.value.isActive) {
+                        scope.launch(Dispatchers.IO) {
+                            CarlinkBridge.statusIfBound()?.let {
+                                logInfo("[NAV_HEALTH] bridge: $it", tag = Logger.Tags.NAVI)
+                            }
+                        }
+                    }
                 }
 
                 // [CALL_AUDIO] diagnostic — emitted every 5s while a phone call is up.

@@ -1327,3 +1327,24 @@
    - Affected: settings.gradle.kts, build.gradle.kts, bridge/**, bridge-api/**, app/build.gradle.kts, AndroidManifest.xml,
      CarlinkManager.kt, AdapterDriver.kt, UsbDeviceWrapper.kt, UsbTransport.kt, BridgeUsbTransport.kt, CarlinkBridge.kt,
      CarlinkMediaBrowserService.kt, NavigationStateManager.kt, ManeuverMapper.kt, ComposedIconStore.kt, strings.xml.
+
+[201] :: HUD maneuver icon 2× larger + flicker fix (icon held per step; bridge v2 content-addressed icon URIs).
+   - On-truck v200: first load works. HUD icon too small; icon flickers as the distance counts down.
+   - Size: IconBitmapRenderer viewport 160 → 80. The 160pt viewport predates per-icon bbox centering [136] and left
+     each composed glyph filling ~1/3 of the 512px bitmap. Every glyph now renders exactly 2×; anything whose bbox
+     exceeds 94% of the viewport (roundabouts, ~84pt) is fitted instead of clipped (~1.8×). Static fallback AVDs are
+     already cropped to the glyph — unchanged. Applies to the cluster too (same Trip).
+   - Flicker, app side: within a step the app already sent the same cached Maneuver/bitmap every tick; the one in-step
+     change was static fallback → composed when the background compose finished. ManeuverMapper.buildManeuver now
+     holds the primary step's Maneuver until the step (cpType, road, turnSide, exitAngle on the same route plan)
+     changes. CarPlay route path only — AA's NAVI_IMAGE can trail the maneuver change, so holding there would pin
+     the previous step's icon. [ICON_STEP] logs each step change and its icon source.
+   - Flicker, bridge side (bridge versionCode 2, re-sideload): every updateTrip re-sends the icon and the Templates
+     Host re-inserts it. Icon URIs were keyed by the host's iconId, so a per-insert id would hand the HUD a "new"
+     image each tick. URIs are now keyed by a SHA-256 prefix of the PNG bytes — unchanged picture ⇒ unchanged URI.
+     Scaled PNGs (?w=&h=) are cached so repeat opens skip decode/scale/encode.
+   - UNVERIFIED which layer causes the flicker. Diagnostics: [NAV_HEALTH] adds relays=N, plus a "[NAV_HEALTH] bridge:"
+     line with icons(insert= pictures= ids= query= open=). inserts tracking relays ⇒ host re-sends per tick;
+     ids tracking inserts ⇒ host mints a new id each time (the case v2 fixes); opens tracking relays ⇒ HUD re-reads.
+   - Affected: IconBitmapRenderer.kt, ManeuverMapper.kt, ClusterBindingState.kt, ClusterMainSession.kt,
+     CarlinkManager.kt, CarlinkBridge.kt, bridge ClusterIconProvider.kt + BridgeStats.kt, both build.gradle.kts.

@@ -24,9 +24,9 @@ import com.carlink.logging.logWarn
  *             a stable resource ID that Templates Host caches by name — avoids the
  *             per-bitmap-identity thrashing you get from createWithBitmap).
  *
- * The ClusterIconShimProvider (see its KDoc) claims the orphaned GM cluster-icon
+ * The sideloaded bridge's ClusterIconProvider (:bridge) claims the orphaned GM cluster-icon
  * ContentProvider authority so Templates Host's CarIcon→PNG conversion succeeds; that
- * shim is what makes AA bitmap icons actually reach the instrument cluster.
+ * provider is what makes bitmap icons actually reach the instrument cluster.
  *
  * Keep in sync with [ManeuverIconRenderer]: both consume the same cpType and both
  * contribute to the same Maneuver. If one learns a new code without the other, the
@@ -288,8 +288,8 @@ object ManeuverMapper {
      * Short, human-readable turn-direction phrase for a CPManeuverType — e.g. "Turn left",
      * "Keep right", "Roundabout, exit 2". Intended to be prepended to the cluster cue
      * (road name) so the turn DIRECTION is conveyed in TEXT even when the maneuver icon
-     * can't be delivered (e.g. on a Play-distributed build where the ClusterIconShimProvider
-     * authority isn't claimable — see issue #6 / cluster_navigation.md). Returns null for
+     * can't be delivered (e.g. the USB bridge, which hosts the cluster icon authority, is not
+     * installed — see issue #6 / cluster_navigation.md). Returns null for
      * maneuvers where a prefix adds nothing over the road name itself (no-turn, straight,
      * follow-road, depart — the latter usually already reads "Start on …").
      *

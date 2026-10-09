@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-feature
+        android:name="android.hardware.usb.host"
+        android:required="false" />
+
+    <!-- No activity on purpose. The platform's fixed USB handler grants this package's UID
+         permission for every attached device, THEN tries to start
+         android.car.usb.handler.UsbHostManagementActivity. When that activity is missing the
+         start fails with ActivityNotFoundException, which the platform catches and logs; the
+         grant has already happened. Declaring the activity would put a sideloaded app on
+         screen at every attach, which GM covers with the driving overlay (PR lvalen91/carlink#15). -->
+    <application
+        android:allowBackup="false"
+        android:label="Carlink2 USB Bridge"
+        tools:ignore="HardcodedText,MissingApplicationIcon">
+
+        <!-- Bound only by com.enigy.carlink2; BridgeService rejects every other caller. -->
+        <service
+            android:name=".BridgeService"
+            android:exported="true"
+            tools:ignore="ExportedService" />
+
+        <!-- The authority GoogleTemplatesHost writes cluster maneuver icons to but never
+             registers. Must be exported: the host and the cluster read it from other UIDs. -->
+        <provider
+            android:name=".ClusterIconProvider"
+            android:authorities="com.google.android.apps.automotive.templates.host.ClusterIconContentProvider"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            tools:ignore="ExportedContentProvider" />
+    </application>
+</manifest>

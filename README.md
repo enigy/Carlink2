@@ -1,4 +1,25 @@
-# Carlink
+# Carlink2
+
+Carlink2 is enigy's two-app build of Carlink for the GM gminfo3.7 head unit (based on
+[lvalen91/carlink](https://github.com/lvalen91/carlink), split approach from
+[PR #15](https://github.com/lvalen91/carlink/pull/15)). It ships as two APKs that work as one:
+
+| App | Package | Installed via | Owns |
+|---|---|---|---|
+| Display | `com.enigy.carlink2` | Google Play (required — Play installs keep the screen while driving) | All UI, CarPlay/AA protocol, video, audio, cluster session |
+| Bridge | `android.car.usb.handler` | Sideload (USB drive) | The adapter's USB connection and the cluster icon provider |
+
+The bridge takes the package name AAOS hands every USB attach to, so it gets USB permission
+without the dialog, and it claims the Templates Host icon authority Play won't give a fork, so
+HUD maneuver icons render. The display app falls back to its own USB dialog when the bridge is
+missing or hasn't been granted the adapter. Details, install order and diagnostics:
+[documents/reference/carlink2_bridge.md](documents/reference/carlink2_bridge.md).
+
+```
+./gradlew :app:bundleRelease :bridge:assembleRelease
+```
+
+---
 
 Carlink is a **native** Kotlin code implementation from the original [Flutter-based](https://github.com/lvalen91/Carlink) app.
 I did this app for me and my use, but sharing so others can use it. Don't expect or demand support but I'll help where i can.

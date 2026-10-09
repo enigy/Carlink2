@@ -1,7 +1,7 @@
 package com.carlink.protocol
 
 import com.carlink.protocol.MultiTouchAction
-import com.carlink.usb.UsbDeviceWrapper
+import com.carlink.usb.UsbTransport
 import java.util.Locale
 import java.util.Timer
 import java.util.TimerTask
@@ -37,13 +37,13 @@ import java.util.concurrent.atomic.AtomicLong
  *    track state externally.
  */
 class AdapterDriver(
-    private val usbDevice: UsbDeviceWrapper,
+    private val transport: UsbTransport,
     private val messageHandler: (Message) -> Unit,
     private val errorHandler: (String) -> Unit,
     private val logCallback: (String) -> Unit,
     private val readTimeout: Int = 30000,
     private val writeTimeout: Int = 1000,
-    private val videoProcessor: UsbDeviceWrapper.VideoDataProcessor? = null,
+    private val videoProcessor: UsbTransport.VideoDataProcessor? = null,
 ) {
     private var heartbeatTimer: Timer? = null
     private var wifiConnectTimer: Timer? = null
@@ -99,9 +99,9 @@ class AdapterDriver(
         sessionStart.set(System.currentTimeMillis())
         log("Starting adapter connection sequence")
 
-        if (!usbDevice.isOpened) {
-            log("USB device not opened")
-            errorHandler("USB device not opened")
+        if (!transport.isOpened) {
+            log("USB transport not opened")
+            errorHandler("USB transport not opened")
             isRunning.set(false)
             return false
         }
@@ -166,7 +166,7 @@ class AdapterDriver(
         wifiConnectTimer?.cancel()
         wifiConnectTimer = null
         stopHeartbeat()
-        usbDevice.stopReadingLoop()
+        transport.stopReadingLoop()
 
         logPerformanceStats()
         resetStats()
@@ -190,7 +190,7 @@ class AdapterDriver(
         }
 
         return try {
-            val result = usbDevice.write(data, writeTimeout)
+            val result = transport.write(data, writeTimeout)
             if (result == data.size) {
                 messagesSent.incrementAndGet()
                 bytesSent.addAndGet(data.size.toLong())
@@ -380,8 +380,8 @@ class AdapterDriver(
     }
 
     private fun startReadingLoop() {
-        usbDevice.startReadingLoop(
-            object : UsbDeviceWrapper.ReadingLoopCallback {
+        transport.startReadingLoop(
+            object : UsbTransport.ReadingLoopCallback {
                 override fun onMessage(
                     type: Int,
                     data: ByteArray?,

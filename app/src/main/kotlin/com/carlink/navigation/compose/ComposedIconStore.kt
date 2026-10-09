@@ -57,7 +57,7 @@ object ComposedIconStore {
      * results. 512×512 ARGB_8888 = 1MB per icon × ~20 maneuvers/route = ~20MB cache —
      * acceptable for a non-CPU-constrained host phone. Bump to 1024 if any cluster's
      * native icon slot exceeds 512px. Truly-scalable delivery would need the ContentURI
-     * render-on-demand provider pattern (see ClusterIconShimProvider) instead of
+     * render-on-demand provider pattern (see the bridge's ClusterIconProvider) instead of
      * pre-rendered bitmaps, but bitmap is the only IPC-serializable format for CarIcon.
      */
     private const val ICON_SIZE_PX = 512

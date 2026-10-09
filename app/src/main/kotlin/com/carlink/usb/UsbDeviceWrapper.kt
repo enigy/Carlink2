@@ -45,6 +45,10 @@ private const val MID_SESSION_SILENCE_MS = 60_000L
 /**
  * USB Device Wrapper for Carlinkit Adapter Communication.
  *
+ * Carlink2: this is the FALLBACK [UsbTransport]. The normal path is [BridgeUsbTransport], where
+ * the sideloaded bridge owns the device. This class is used when the bridge is missing or has
+ * not been granted the current device instance, and it brings back the USB permission dialog.
+ *
  * Provides a high-level interface for USB device operations including:
  * - Device discovery and permission handling
  * - Connection lifecycle management
@@ -75,7 +79,7 @@ class UsbDeviceWrapper(
     private val usbManager: UsbManager,
     private val device: UsbDevice,
     private val logCallback: (String) -> Unit,
-) {
+) : UsbTransport {
     private var connection: UsbDeviceConnection? = null
     private var claimedInterface: UsbInterface? = null
     private var inEndpoint: UsbEndpoint? = null
@@ -89,12 +93,12 @@ class UsbDeviceWrapper(
     // from the CAS on _isReadingLoopActive in stopReadingLoop, not from volatility.
     @Volatile private var readLoopThread: Thread? = null
 
-    val isOpened: Boolean get() = _isOpened.get()
+    override val isOpened: Boolean get() = _isOpened.get()
     val isReadingLoopActive: Boolean get() = _isReadingLoopActive.get()
 
     val vendorId: Int get() = device.vendorId
     val productId: Int get() = device.productId
-    val deviceName: String get() = device.deviceName
+    override val deviceName: String get() = device.deviceName
 
     // Performance tracking — atomic because write() is called from multiple threads
     // (heartbeat timer, mic capture timer, frame interval coroutine, UI thread).
@@ -250,7 +254,7 @@ class UsbDeviceWrapper(
     /**
      * Close the USB device and release resources.
      */
-    fun close() {
+    override fun close() {
         stopReadingLoop()
 
         claimedInterface?.let { iface ->
@@ -281,9 +285,9 @@ class UsbDeviceWrapper(
      * @param timeout Timeout in milliseconds
      * @return Number of bytes actually sent, or -1 on error
      */
-    fun write(
+    override fun write(
         data: ByteArray,
-        timeout: Int = 1000,
+        timeout: Int,
     ): Int {
         val conn =
             connection ?: run {
@@ -354,49 +358,16 @@ class UsbDeviceWrapper(
     }
 
     /**
-     * Callback interface for direct video data processing.
-     * [DIRECT_HANDOFF]: Data is already read into a buffer by the read loop.
-     * Processor receives the buffer directly — no callback, no copy.
-     */
-    interface VideoDataProcessor {
-        /**
-         * Process video data directly. Data is valid only for duration of this call.
-         *
-         * @param data Buffer containing video payload (including 20-byte video header)
-         * @param dataLength Actual bytes read into data
-         * @param sourcePtsMs Source presentation timestamp in milliseconds from video header
-         */
-        fun processVideoDirect(
-            data: ByteArray,
-            dataLength: Int,
-            sourcePtsMs: Int,
-        )
-    }
-
-    /**
-     * Callback interface for reading loop events.
-     */
-    interface ReadingLoopCallback {
-        fun onMessage(
-            type: Int,
-            data: ByteArray?,
-            dataLength: Int,
-        )
-
-        fun onError(error: String)
-    }
-
-    /**
      * Start the continuous reading loop.
      *
      * @param callback Callback for received messages
      * @param timeout Read timeout in milliseconds
      * @param videoProcessor Optional processor for direct video data handling (bypasses message parsing)
      */
-    fun startReadingLoop(
-        callback: ReadingLoopCallback,
-        timeout: Int = 30000,
-        videoProcessor: VideoDataProcessor? = null,
+    override fun startReadingLoop(
+        callback: UsbTransport.ReadingLoopCallback,
+        timeout: Int,
+        videoProcessor: UsbTransport.VideoDataProcessor?,
     ) {
         if (_isReadingLoopActive.getAndSet(true)) {
             log("Reading loop already active")
@@ -717,7 +688,7 @@ class UsbDeviceWrapper(
      * cleanly, but there is a brief window where a closing connection is still in
      * use by the reader thread.
      */
-    fun stopReadingLoop() {
+    override fun stopReadingLoop() {
         if (!_isReadingLoopActive.getAndSet(false)) return
         try {
             readLoopThread?.join(1000)

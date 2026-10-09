@@ -17,5 +17,10 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "carlink-native"
+rootProject.name = "carlink2"
+// :app        — com.enigy.carlink2, the Play-distributed display app (all UI + protocol)
+// :bridge     — android.car.usb.handler, the sideloaded USB owner + cluster icon provider
+// :bridge-api — AIDL contract shared by both
 include(":app")
+include(":bridge")
+include(":bridge-api")

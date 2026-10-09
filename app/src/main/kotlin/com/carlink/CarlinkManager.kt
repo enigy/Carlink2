@@ -52,7 +52,9 @@ import com.carlink.protocol.VideoStreamingSignal
 import com.carlink.ui.settings.AdapterConfigPreference
 import com.carlink.ui.settings.MicSourceConfig
 import com.carlink.ui.settings.WiFiBandConfig
+import com.carlink.usb.BridgeUsbTransport
 import com.carlink.usb.UsbDeviceWrapper
+import com.carlink.usb.UsbTransport
 import com.carlink.util.AppExecutors
 import com.carlink.util.LogCallback
 import com.carlink.video.H264Renderer
@@ -147,6 +149,12 @@ class CarlinkManager(
     companion object {
         private const val USB_WAIT_PERIOD_MS = 3000L
         private const val PAIR_TIMEOUT_MS = 15000L
+
+        // How long to keep retrying through the bridge when it lacks permission for the current
+        // adapter instance before falling back to this app's own USB permission dialog. A
+        // re-enumeration within this window hands the bridge a fresh platform grant. Reconnect
+        // backoff (2s, 4s, 8s…) means the fallback lands on the attempt ~14s after the first miss.
+        private const val BRIDGE_PERMISSION_GRACE_MS = 10_000L
 
         // Grace window after a spontaneous phone unplug before we re-initiate the
         // connection. Lets the adapter's autoConn re-pair a transiently-dropped phone
@@ -355,7 +363,13 @@ class CarlinkManager(
 
     // USB
     private val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
-    private var usbDevice: UsbDeviceWrapper? = null
+
+    // The open transport: the bridge normally, this app's own UsbDeviceWrapper as fallback.
+    private var usbTransport: UsbTransport? = null
+
+    // elapsedRealtime of the first bridge attempt that found the bridge without permission for
+    // the attached adapter; 0 = not currently in that state. See BRIDGE_PERMISSION_GRACE_MS.
+    private var bridgeNoPermissionSinceMs = 0L
 
     // Platform AudioManager (distinct from the DualStreamAudioManager `audioManager` field) — used
     // to enter MODE_IN_COMMUNICATION for phone calls (see [enterCommunicationAudioMode]).
@@ -952,13 +966,13 @@ class CarlinkManager(
         val device = findDevice()
         if (device == null) {
             logError("Failed to find Carlinkit device", tag = Logger.Tags.USB)
+            bridgeNoPermissionSinceMs = 0L
             setState(State.DISCONNECTED)
             setStatusText("Adapter not found")
             return
         }
 
         log("Device found, opening")
-        usbDevice = device
         setStatusText("Adapter found — opening...")
 
         // AltVideo (USB 0x2C) gate — evaluated each session start (cheap; PlatformDetector
@@ -986,12 +1000,8 @@ class CarlinkManager(
             tag = Logger.Tags.VIDEO,
         )
 
-        if (!device.openWithPermission()) {
-            logError("Failed to open USB device", tag = Logger.Tags.USB)
-            setState(State.DISCONNECTED)
-            setStatusText("USB permission denied")
-            return
-        }
+        val transport = openTransport(device) ?: return
+        usbTransport = transport
 
         // Clear any stale adapter session left by a prior force-kill or crash.
         // The adapter firmware retains session state across USB reconnects. If the previous
@@ -999,8 +1009,8 @@ class CarlinkManager(
         // stays in PLUGGED/STREAMING state and ignores our OPEN command. Sending these
         // teardown commands before constructing AdapterDriver is safe on idle adapters (no-op).
         log("Clearing stale adapter session state")
-        device.write(MessageSerializer.serializeDisconnectPhone())
-        device.write(MessageSerializer.serializeCloseDongle())
+        transport.write(MessageSerializer.serializeDisconnectPhone())
+        transport.write(MessageSerializer.serializeCloseDongle())
         // Empirical 200ms floor — shorter values showed "adapter busy" errors on fast
         // reconnect paths. 3-host evidence for firmware 2025.10.15.1127CAY:
         // - POTATO GM AAOS (5 samples): CMD_STOP_PHONE_CONNECTION use-time 277-287ms,
@@ -1019,7 +1029,7 @@ class CarlinkManager(
         // Create and start adapter driver
         adapterDriver =
             AdapterDriver(
-                usbDevice = device,
+                transport = transport,
                 messageHandler = ::handleMessage,
                 errorHandler = ::handleError,
                 logCallback = ::log,
@@ -1112,6 +1122,60 @@ class CarlinkManager(
     }
 
     /**
+     * Open the adapter through the sideloaded bridge when possible, otherwise directly.
+     *
+     * The bridge (android.car.usb.handler) receives the platform's fixed-handler grant on every
+     * attach, so it normally opens with no dialog. When it lacks permission for this device
+     * instance (suspected cause: the adapter enumerated while the system user was current, before
+     * the switch to the driver profile), keep retrying through it for [BRIDGE_PERMISSION_GRACE_MS]
+     * in case a re-enumeration brings a fresh grant, then fall back to this app's own permission
+     * dialog. Returns null after setting state + status when nothing could be opened.
+     */
+    private suspend fun openTransport(device: UsbDeviceWrapper): UsbTransport? {
+        when (val result = BridgeUsbTransport.open(context, device.deviceName)) {
+            is BridgeUsbTransport.OpenResult.Opened -> {
+                bridgeNoPermissionSinceMs = 0L
+                logInfo("[BRIDGE] Adapter ${device.deviceName} opened through the bridge", tag = Logger.Tags.USB)
+                return result.transport
+            }
+            BridgeUsbTransport.OpenResult.NotInstalled -> {
+                logWarn("[BRIDGE] Bridge not installed — opening the adapter directly", tag = Logger.Tags.USB)
+            }
+            BridgeUsbTransport.OpenResult.NoPermission -> {
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (bridgeNoPermissionSinceMs == 0L) bridgeNoPermissionSinceMs = now
+                val waitedMs = now - bridgeNoPermissionSinceMs
+                if (waitedMs < BRIDGE_PERMISSION_GRACE_MS) {
+                    logWarn(
+                        "[BRIDGE] Bridge has no permission for ${device.deviceName} yet " +
+                            "(${waitedMs}ms of ${BRIDGE_PERMISSION_GRACE_MS}ms grace) — retrying",
+                        tag = Logger.Tags.USB,
+                    )
+                    setState(State.DISCONNECTED)
+                    setStatusText("Waiting for USB bridge…")
+                    return null
+                }
+                logWarn(
+                    "[BRIDGE] Bridge still has no permission for ${device.deviceName} after ${waitedMs}ms — " +
+                        "falling back to direct USB (permission dialog)",
+                    tag = Logger.Tags.USB,
+                )
+            }
+            is BridgeUsbTransport.OpenResult.Failed -> {
+                logWarn("[BRIDGE] ${result.reason} — opening the adapter directly", tag = Logger.Tags.USB)
+            }
+        }
+
+        if (!device.openWithPermission()) {
+            logError("Failed to open USB device", tag = Logger.Tags.USB)
+            setState(State.DISCONNECTED)
+            setStatusText("USB permission denied")
+            return null
+        }
+        return device
+    }
+
+    /**
      * Stop and disconnect.
      *
      * @param reboot when true, issues `rebootAdapter()` (0xCD) in addition to the graceful
@@ -1158,8 +1222,8 @@ class CarlinkManager(
         adapterDriver?.stop()
         adapterDriver = null
 
-        usbDevice?.close()
-        usbDevice = null
+        usbTransport?.close()
+        usbTransport = null
 
         // Stop audio
         if (audioInitialized) {
@@ -1483,8 +1547,8 @@ class CarlinkManager(
         adapterDriver?.rebootAdapter()
         adapterDriver?.stop()
         adapterDriver = null
-        usbDevice?.close()
-        usbDevice = null
+        usbTransport?.close()
+        usbTransport = null
         if (audioInitialized) {
             audioManager?.release()
             audioInitialized = false
@@ -3100,8 +3164,8 @@ class CarlinkManager(
         // Skip graceful teardown — USB is likely dead.
         adapterDriver?.stop()
         adapterDriver = null
-        usbDevice?.close()
-        usbDevice = null
+        usbTransport?.close()
+        usbTransport = null
 
         if (audioInitialized) {
             audioManager?.release()
@@ -3442,8 +3506,8 @@ class CarlinkManager(
      * - offset 12: pts (4 bytes) - SOURCE PRESENTATION TIMESTAMP (milliseconds, logged only — codec uses elapsed-time PTS)
      * - offset 16: flags (4 bytes) - usually 0 (reserved)
      */
-    private fun createVideoProcessor(): UsbDeviceWrapper.VideoDataProcessor {
-        return object : UsbDeviceWrapper.VideoDataProcessor {
+    private fun createVideoProcessor(): UsbTransport.VideoDataProcessor {
+        return object : UsbTransport.VideoDataProcessor {
             override fun processVideoDirect(
                 data: ByteArray,
                 dataLength: Int,

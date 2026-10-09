@@ -26,6 +26,7 @@ import com.carlink.BuildConfig
 import com.carlink.MainActivity
 import com.carlink.R
 import com.carlink.logging.logInfo
+import com.carlink.usb.CarlinkBridge
 import com.carlink.usb.UsbDeviceWrapper
 import com.carlink.util.LogCallback
 
@@ -233,6 +234,13 @@ class CarlinkMediaBrowserService : MediaLibraryService() {
      * taps "Use by default" + Allow once; all subsequent boot cycles are silent.
      */
     private fun probeUsbPermissionsAtBoot() {
+        // Carlink2: the bridge owns USB permission. Asking here would put this app's dialog on
+        // screen at boot even though the bridge already holds the grant; CarlinkManager falls
+        // back to the dialog itself only when the bridge can't open the adapter.
+        if (CarlinkBridge.isInstalled(this)) {
+            logInfo("[BROWSER_SERVICE] USB bridge installed — skipping boot permission probe", tag = "MEDIA_SESSION")
+            return
+        }
         val usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
         val devices = UsbDeviceWrapper.findDevices(usbManager)
         if (devices.isEmpty()) {

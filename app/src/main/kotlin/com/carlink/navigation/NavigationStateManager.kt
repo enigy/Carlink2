@@ -79,16 +79,11 @@ object NavigationStateManager {
     /** Burst window: two maneuver messages within this threshold are current + next. */
     private const val BURST_THRESHOLD_MS = 50L
 
-    // Intentionally a literal — DO NOT swap to BuildConfig.CLUSTER_ICON_AUTHORITY for
-    // symmetry with ClusterIconShimProvider. This constant is the probe target for the
-    // runtime guard below, and the probe is meaningful only against the authority
-    // Templates Host actually calls (the GM literal hardcoded in its dex). On the play
-    // flavor our shim is registered under a different (applicationId-suffixed) authority
-    // to satisfy Play Console; templating this would make resolveContentProvider() find
-    // our own shim and incorrectly enable the AA bitmap path when Templates Host's call
-    // still goes nowhere — silent icon failure instead of the documented graceful fallback.
+    // The authority Templates Host actually calls (hardcoded in its dex). In Carlink2 it is
+    // claimed by the sideloaded bridge's ClusterIconProvider, not by this app — the manifest's
+    // <queries> entry is what lets resolveContentProvider() see it from here.
     private const val CLUSTER_ICON_PROVIDER_AUTHORITY =
-        "com.google.android.apps.automotive.templates.host.ClusterIconContentProvider"
+        com.enigy.carlink2.bridge.BridgeContract.CLUSTER_ICON_AUTHORITY
 
     /** Timestamp (elapsedRealtime) of the last maneuver-bearing message. */
     private var lastManeuverMs = 0L
@@ -187,11 +182,12 @@ object NavigationStateManager {
     private var clusterEnumOnly: Boolean = false
 
     /**
-     * Resolve whether Templates Host's ClusterIconContentProvider authority is actually
-     * available to this app. Play builds cannot ship our shim with that authority, so AA
-     * bitmap icons must be disabled when the authority cannot be resolved at runtime.
+     * Resolve whether Templates Host's ClusterIconContentProvider authority is claimed on this
+     * head unit — in Carlink2, by the sideloaded bridge. Without a claimant the host's icon
+     * insert fails, so maneuver bitmaps are pointless and are dropped.
      *
-     * Called once from [com.carlink.CarlinkManager] init.
+     * Called once from [com.carlink.CarlinkManager] init and cached for the process: installing
+     * the bridge while this app is running takes effect on the next app start.
      */
     fun initialize(context: Context) {
         if (isClusterIconProviderAvailable != null) return

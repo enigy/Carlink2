@@ -1301,3 +1301,28 @@
    - Net instrumentation after [198]+[199]: any unrecognized field in EITHER nav message announces
      itself once, and every TLV of every ramp maneuver is dumped ([RAMP_TLV]).
    - Affected: navigation/Iap2StateParser.kt.
+
+[200] :: Carlink2 — split into a Play display app (com.enigy.carlink2) + sideloaded USB bridge (android.car.usb.handler).
+   - New repo/app. Approach from lvalen91/carlink PR #15 (ericyanush), redesigned: bridge owns USB + cluster icon authority,
+     display app keeps all protocol/UI and stays Play-installed for the driving overlay.
+   - Mechanism (AOSP android12L, verified in source): car overlay sets config_UsbDeviceConnectionHandling_component to
+     android.car.usb.handler/.UsbHostManagementActivity → UsbHostManager skips the attach resolver and calls
+     deviceAttachedForFixedHandler(), which grants that package's UID, then fails to start the (absent) activity. Explains
+     the 0 USB_DEVICE_ATTACHED observations in [171]/[173].
+   - :bridge — no activity. BridgeService (AIDL ICarlinkBridge) opens/claims the adapter, pumps COMPLETE inbound messages
+     into a socket (same 16 B header / ≤16 KB payload request pattern as the old direct path), one bulkTransfer per write()
+     under a lock. Caller must be com.enigy.carlink2 (+ optional cert pin via carlink2.callerCerts). ClusterIconProvider =
+     the old ClusterIconShimProvider, moved, on the GM Templates Host authority.
+   - :bridge-api — ICarlinkBridge.aidl + BridgeContract.
+   - :app — UsbTransport interface (UsbDeviceWrapper = fallback, BridgeUsbTransport = socket reader with poll timeouts and
+     the same demux/silence rules). CarlinkManager.openTransport(): bridge first; no permission → 10 s grace then direct
+     dialog; any bridge error → direct. Boot permission probe skipped when the bridge is installed. <queries> for the bridge
+     package + icon authority. Flavors removed; ClusterIconShimProvider removed from the app.
+   - Dropped from the fork (per user): USB dialog tweaks [196], [171], [169], [165] late-grant part, [162] permission parts;
+     HUD icon workarounds [162] ICON_PROBE + ComposedIconStore default flip. Kept: loading screen/background [175]-[181],
+     launcher icon [182], everything else.
+   - Diagnostics: [BRIDGE] status line on every connect (handler config, user id, per-device perm, session, icon counters).
+   - UNTESTED: not compiled in the authoring environment (no Android SDK); not run on hardware.
+   - Affected: settings.gradle.kts, build.gradle.kts, bridge/**, bridge-api/**, app/build.gradle.kts, AndroidManifest.xml,
+     CarlinkManager.kt, AdapterDriver.kt, UsbDeviceWrapper.kt, UsbTransport.kt, BridgeUsbTransport.kt, CarlinkBridge.kt,
+     CarlinkMediaBrowserService.kt, NavigationStateManager.kt, ManeuverMapper.kt, ComposedIconStore.kt, strings.xml.

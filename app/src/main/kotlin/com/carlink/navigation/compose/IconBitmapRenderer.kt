@@ -25,37 +25,23 @@ import android.graphics.RectF
  */
 internal object IconBitmapRenderer {
     /**
-     * Viewport size in source coordinates. Apple's MapKit uses 56pt as the nominal canvas,
-     * but the actual shape bounds extend WELL beyond that — empirically verified by calling
-     * the private `MKArrowAppend*ToPathInRect` on macOS arm64e MapKit (2026-05-26):
+     * Share of the bitmap's side the icon's longer bbox edge fills ([202]).
      *
-     *   - LeftTurn:  x ranges -42.14 .. +0     (arrowhead tip at -42.14 to the west)
-     *   - RightTurn: x ranges  +25   .. +73.14 (arrowhead tip at +73.14 to the east)
-     *   - U-turn:    x ranges  +0.06 .. +49.5  (vertical-ish, fits)
-     *   - Merge*:    x ranges  +6    .. +49    (fits)
-     *   - ExitRoad*: similar range
-     *   - Roundabouts: span ~R_OUT+STUB+ARROW = ~42 from center
+     * Each icon is scaled to its own bounds, the way the static fallback AVDs
+     * (res/drawable/cp_maneuver_*.xml) are cropped: their viewports sit ~2pt outside the glyph,
+     * so the glyph fills ~92% of the long side (right turn 47.75/51.75, straight 47.27/51.27,
+     * U-turn 49.6/53.6). Matching that makes a composed icon the same size on the HUD as the
+     * fallback the first step shows while the route is still composing.
      *
-     * For the left/right turn arrows, the total horizontal span is from -42 to +73 = 115pt.
-     * Centered on Apple's (28, 28) origin, we need viewport ≥ 115 + 2*max(|center-edge|) =
-     * 115 + 2*45 = ~150pt safe. Using 160pt provides ~22pt margin on the leftmost arrowhead
-     * tip and ~14pt margin on the rightmost. Cluster downscales to ~88-200dp regardless,
-     * so the larger viewport doesn't affect visible output quality.
-     *
-     * Prior 96pt viewport CLIPPED the LeftTurn arrowhead (verified 2026-05-26 in Robolectric
-     * test); 160pt fixes it.
-     *
-     * [201] 160 → 80: the 160pt sizing predates per-icon bbox centering (below), when one
-     * viewport had to hold every arrow around Apple's (28, 28) origin. Centered on its own
-     * bbox, each icon only needs room for its own extent (~42-56pt for turns/merges/U-turns),
-     * so 160 left the glyph filling about a third of the bitmap and the HUD drew it small.
-     * Halving the viewport doubles every glyph. Icons wider than [MAX_FILL] of it (roundabouts,
-     * ~84pt) are fitted instead of clipped — see [render].
+     * History: this used a fixed 160pt viewport (sized before per-icon centering, when one
+     * viewport had to hold every arrow around Apple's (28, 28) origin), which left glyphs
+     * filling about a third of the bitmap; on-truck the composed icons read ~half the size of
+     * the first (fallback) icon. [201] tried a fixed 80pt viewport (2×); fitting to bounds
+     * matches the fallback exactly instead. Trade-off: stroke weight now varies a little
+     * between icons, as it already does across the AVD set.
      */
-    private const val VIEWPORT_SIZE = 80.0f
+    private const val GLYPH_FILL = 0.92f
 
-    /** Largest share of the bitmap an icon's bbox may fill before it is shrunk to fit. */
-    private const val MAX_FILL = 0.94f
     /**
      * Apple's nominal canvas is centered on (28, 28) but the actual icon bbox is NOT
      * always centered there. e.g. LEFT_TURN bbox center is at x=-21.6 (49pt left of canvas
@@ -105,11 +91,9 @@ internal object IconBitmapRenderer {
         val centerX = (bbox.left + bbox.right) / 2.0f
         val centerY = (bbox.top + bbox.bottom) / 2.0f
 
-        // Uniform scale keeps stroke weight identical across icons; only an icon too big for
-        // the viewport (a roundabout) gets its own, smaller scale so it isn't clipped.
-        val extent = maxOf(bbox.width(), bbox.height())
-        val viewport = if (extent > VIEWPORT_SIZE * MAX_FILL) extent / MAX_FILL else VIEWPORT_SIZE
-        val scale = size.toFloat() / viewport
+        // Fit the longer bbox edge to GLYPH_FILL of the bitmap — same cropping as the AVDs.
+        val extent = maxOf(bbox.width(), bbox.height()).coerceAtLeast(1.0f)
+        val scale = size * GLYPH_FILL / extent
 
         val matrix = Matrix().apply {
             setTranslate(-centerX, -centerY)

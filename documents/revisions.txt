@@ -1348,3 +1348,15 @@
      ids tracking inserts ⇒ host mints a new id each time (the case v2 fixes); opens tracking relays ⇒ HUD re-reads.
    - Affected: IconBitmapRenderer.kt, ManeuverMapper.kt, ClusterBindingState.kt, ClusterMainSession.kt,
      CarlinkManager.kt, CarlinkBridge.kt, bridge ClusterIconProvider.kt + BridgeStats.kt, both build.gradle.kts.
+
+[202] :: Composed HUD icons cropped like the fallback icons — every icon now matches the first one's size.
+   - On-truck (v200, before trying [201]): the FIRST HUD icon is normal size; after it disappears, later icons are
+     ~half that size. Reading: the first step shows the static fallback AVD (route still composing in the background);
+     when compose finishes the icon swaps to the composed bitmap — the "disappear" — and every later icon is composed.
+   - The AVDs are cropped ~2pt outside the glyph (long side ~92% filled); composed bitmaps used a fixed viewport
+     (160pt, then 80pt in [201]) with the glyph well short of the edges.
+   - IconBitmapRenderer now fits each icon's longer bbox edge to 92% of the bitmap (GLYPH_FILL), matching the AVDs.
+     Supersedes [201]'s fixed 2×. Stroke weight varies slightly between icons, as across the AVD set.
+   - With [201]'s step hold, the first step keeps its fallback icon (no mid-step swap) and later steps use composed
+     icons at the same size.
+   - Affected: navigation/compose/IconBitmapRenderer.kt, app/build.gradle.kts.

@@ -114,28 +114,6 @@ class ClusterMainSession : Session() {
 
         // --- Everything below runs only for the primary session ---
 
-        // DIAGNOSTIC (release-visible): report WHICH package actually owns the GM cluster-icon
-        // ContentProvider authority on this firmware. If it resolves to our own package, our
-        // ClusterIconShimProvider successfully claimed the orphaned authority and is ready to
-        // serve maneuver-icon bitmaps. If it resolves to the Templates Host package (or null),
-        // GM registered its own provider (or none) under that authority — our shim never gets
-        // called and the cluster can't receive our icons, which fully explains "text but no
-        // icon" with zero ICON_SHIM activity. Remove once the cluster-icon path is resolved.
-        try {
-            val iconAuthority =
-                "com.google.android.apps.automotive.templates.host.ClusterIconContentProvider"
-            @Suppress("DEPRECATION")
-            val owner = carContext.packageManager.resolveContentProvider(iconAuthority, 0)
-            logInfo(
-                "[CLUSTER_MAIN] [ICON_PROBE] authority=$iconAuthority " +
-                    "owner=${owner?.packageName ?: "UNRESOLVED (no provider claims it)"} " +
-                    "exported=${owner?.exported} ours=${owner?.packageName == carContext.packageName}",
-                tag = Logger.Tags.CLUSTER,
-            )
-        } catch (e: Exception) {
-            logWarn("[CLUSTER_MAIN] [ICON_PROBE] resolve failed: ${e.message}", tag = Logger.Tags.CLUSTER)
-        }
-
         // Get NavigationManager — needed for navigationStarted() which triggers cluster creation
         try {
             navigationManager = carContext.getCarService(NavigationManager::class.java)

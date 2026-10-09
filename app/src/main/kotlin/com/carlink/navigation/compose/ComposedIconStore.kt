@@ -65,14 +65,9 @@ object ComposedIconStore {
     /**
      * Master switch. When false, [lookup] returns null even if a bitmap exists.
      * Toggleable at runtime via [setEnabled] for A/B testing during validation.
-     *
-     * Default flipped ON (local customization): enables the composed bitmap
-     * maneuver-icon path so the GM cluster renders turn icons. Safe now that the
-     * heavy compose+render runs on the background "IconComposer" thread (upstream
-     * commit 729baeb) rather than the USB read thread.
      */
     @Volatile
-    var enabled: Boolean = true
+    var enabled: Boolean = false
         private set
 
     fun setEnabled(value: Boolean) {

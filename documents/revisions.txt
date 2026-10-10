@@ -1444,3 +1444,17 @@
    - Bridge unchanged (v3).
    - UNTESTED: not compiled in the authoring environment (no Android SDK); not run on hardware.
    - Affected: CarlinkManager.kt, usb/BridgeUsbTransport.kt, app/build.gradle.kts.
+
+[207] :: HUD no longer drops navigation ~650–700 ft before the destination.
+   - On-truck (v202 and v205, same destination, two drives): HUD icon and turn text vanish 600–800 ft out while
+     CarPlay keeps navigating. Log: the last step (cpType 25, arrive on the right) became current at 297–302 m;
+     ClusterMainSession treated any terminal type as "arrived", started its 10 s arrival timeout and ended HUD
+     navigation at 210 m / 198 m left. The arrival latch ([185]) then blocked re-starts for the rest of the leg.
+     The phone's own flush (NaviStatus=0) came ~30 s after actually arriving (21:27:51).
+   - Arrival now = terminal type AND remainDistance ≤ ARRIVAL_ZONE_M (50 m; last distances reported before
+     arrival were 17–22 m). Only then does the latch set and the 10 s timeout start. Any update short of that
+     clears the latch and cancels a pending timeout, so a mid-leg flush re-starts navigation normally.
+   - [185]'s end-of-trip anti-flicker unchanged: at arrival distances stay inside the zone.
+   - Log: "[CLUSTER_MAIN] Arrived (cpType=…, Nm left) — starting 10s arrival timeout".
+   - UNTESTED: not compiled in the authoring environment (no Android SDK); not run on hardware.
+   - Affected: cluster/ClusterMainSession.kt, app/build.gradle.kts.

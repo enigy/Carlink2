@@ -70,12 +70,12 @@ class ClusterMainSession : Session() {
     private var hasSeenActiveNav = false
 
     /** Pending arrival timeout — fires navigationEnded() if adapter doesn't send NaviStatus=0
-     *  after a terminal maneuver (arrived, endOfNavigation, endOfDirections). */
+     *  after arrival (a terminal maneuver within ARRIVAL_ZONE_M). */
     private var arrivalTimeoutJob: Job? = null
 
     /**
-     * Set true once we've relayed a terminal (arrival) maneuver; cleared when a genuinely new,
-     * non-terminal maneuver arrives (a fresh trip). While latched we suppress the
+     * Set true once we've relayed arrival (a terminal maneuver within ARRIVAL_ZONE_M); cleared
+     * by any update short of arrival (a fresh trip, or the final stretch). While latched we suppress the
      * navigationEnded()→navigationStarted() re-start churn caused by the adapter oscillating
      * NaviStatus and re-sending the "arrived" frame at trip end — that churn made the cluster nav
      * card flicker (disappear/reappear) repeatedly during the final approach. The arrival is shown
@@ -93,8 +93,17 @@ class ClusterMainSession : Session() {
             27, // endOfDirections
         )
 
-        /** Grace period for adapter to send NaviStatus=0 after terminal maneuver. */
+        /** Grace period for adapter to send NaviStatus=0 after arrival. */
         private const val ARRIVAL_TIMEOUT_MS = 10_000L
+
+        /**
+         * [207] A terminal type counts as "arrived" only this close to the destination. The
+         * arrive-left/right step is current for the whole last stretch of road, counting down
+         * (truck log 2026-10-09: became current at 297 m). Timing out from the moment it became
+         * current ended HUD navigation ~200 m (650–700 ft) short of the destination. The last
+         * distances Apple reports before arriving were 17–22 m.
+         */
+        private const val ARRIVAL_ZONE_M = 50
 
         /** First live session wins; cleared on destroy so a fresh binding chain can take over. */
         private val primarySession = AtomicReference<ClusterMainSession?>(null)
@@ -236,11 +245,13 @@ class ClusterMainSession : Session() {
 
         if (state.isActive) {
             hasSeenActiveNav = true
-            val terminal = state.maneuverType in TERMINAL_MANEUVER_TYPES
+            // Terminal types are approached like any other step; only within ARRIVAL_ZONE_M is
+            // the trip actually over ([207]).
+            val arrived = state.maneuverType in TERMINAL_MANEUVER_TYPES && state.remainDistance <= ARRIVAL_ZONE_M
 
-            // A non-terminal maneuver means a genuinely new trip is underway — drop the arrival
-            // latch so navigation can re-start normally.
-            if (!terminal) arrivalLatched = false
+            // Anything short of arrival — a new trip, or still driving the final stretch — drops
+            // the arrival latch so navigation can re-start normally (e.g. after a mid-drive flush).
+            if (!arrived) arrivalLatched = false
 
             // Re-enter navigation if a prior path cleared isNavigating: adapter flush
             // (isIdle branch below), onStopNavigation callback from the Host, or the
@@ -249,9 +260,9 @@ class ClusterMainSession : Session() {
                 // Anti-flicker: once we've arrived and ended, do NOT re-start navigation for the
                 // repeated "arrived" frames the adapter keeps sending (it oscillates NaviStatus at
                 // trip end). Re-starting here just to immediately re-show "arrived" and re-arm the
-                // timeout is what made the cluster card flicker. Only a non-terminal maneuver (new
-                // trip, latch cleared above) gets past this guard.
-                if (terminal && arrivalLatched) {
+                // timeout is what made the cluster card flicker. Only a step short of arrival (new
+                // trip, or the final stretch — latch cleared above) gets past this guard.
+                if (arrived && arrivalLatched) {
                     return
                 }
                 logInfo("[CLUSTER_MAIN] navigationStarted() (re-start)", tag = Logger.Tags.CLUSTER)
@@ -288,10 +299,10 @@ class ClusterMainSession : Session() {
                 )
             }
 
-            // Arrival timeout: if maneuver is a terminal type (arrived, endOfNavigation, etc.)
-            // start a grace period. If the adapter doesn't send NaviStatus=0 within the window,
-            // end navigation ourselves. Catches firmware gap where arrival is sent without flush.
-            if (terminal) {
+            // Arrival timeout: once arrived (terminal type within ARRIVAL_ZONE_M) start a grace
+            // period. If the adapter doesn't send NaviStatus=0 within the window, end navigation
+            // ourselves. Catches firmware gap where arrival is sent without flush.
+            if (arrived) {
                 // Latch arrival: we've now shown the arrival card, so subsequent terminal frames
                 // (after navigation ends) are suppressed by the re-start guard above.
                 arrivalLatched = true
@@ -299,7 +310,7 @@ class ClusterMainSession : Session() {
                 // subsequent terminal-maneuver updates within the same arrival burst.
                 if (arrivalTimeoutJob?.isActive != true) {
                     logInfo(
-                        "[CLUSTER_MAIN] Terminal maneuver (cpType=${state.maneuverType}) — " +
+                        "[CLUSTER_MAIN] Arrived (cpType=${state.maneuverType}, ${state.remainDistance}m left) — " +
                             "starting ${ARRIVAL_TIMEOUT_MS / 1000}s arrival timeout",
                         tag = Logger.Tags.CLUSTER,
                     )
@@ -324,7 +335,8 @@ class ClusterMainSession : Session() {
                     }
                 }
             } else {
-                // Non-terminal maneuver — cancel any pending arrival timeout
+                // Not arrived (any other step, or the final stretch) — cancel any pending arrival
+                // timeout, e.g. one armed by a stale 0 m reading before the real distance came in.
                 arrivalTimeoutJob?.cancel()
                 arrivalTimeoutJob = null
             }

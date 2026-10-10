@@ -36,4 +36,12 @@ interface ICarlinkBridge {
 
     /** One-line diagnostics: handler config, user, USB permission, session and icon counters. */
     String getStatus();
+
+    /**
+     * API 2. For an adapter the platform never granted (it attached during boot, before the
+     * driver's profile was up): show the system USB permission prompt for deviceName, ONCE per
+     * device instance. Repeat calls only report the state, and a denial sticks until the
+     * adapter re-enumerates (new deviceName). Returns a BridgeContract.PERMISSION_* value.
+     */
+    int requestPermission(String deviceName);
 }

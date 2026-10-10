@@ -1396,9 +1396,28 @@
      the bridge quietly and only start a connection once it could succeed (no Connecting/Disconnected cycling).
    - MainActivity's USB receiver now also takes ACTION_USB_DEVICE_ATTACHED → CarlinkManager.onUsbDeviceAttached()
      reconnects right away (after the 2.5 s wake settle) instead of at the next 30 s holding-pattern retry.
-   - Boot-race fix itself is still open (needs a decision: bridge-owned one-tap prompt vs. replug).
+   - Boot-race fix itself: see [205].
    - UNTESTED: not compiled in the authoring environment (no Android SDK); not run on hardware.
    - Affected: usb/UsbDeviceWrapper.kt (deleted), usb/AdapterDevices.kt (new), usb/BridgeUsbTransport.kt,
      usb/UsbTransport.kt, CarlinkManager.kt, MainActivity.kt, media/CarlinkMediaBrowserService.kt, comments in
      MessageTypes/MessageParser/MessageSerializer/NaviVideoForwarder, documents/reference/carlink2_bridge.md,
      app/build.gradle.kts.
+
+[205] :: Bridge v3 — one-tap USB permission prompt for an adapter that attached during boot.
+   - User decision (2026-10-10): after a cold start, one tap beats a replug. Confirmed from the v202 drive: the
+     6:19–6:23 connect/disconnect loop was the boot-race adapter + the old fallback dialog (user tapped Deny to
+     escape it); the 6:23 recovery was a manual replug.
+   - Bridge (versionCode 3 / 1.0.2, re-sideload; API 2): ICarlinkBridge.requestPermission(deviceName), appended.
+     New PermissionPrompt: UsbManager.requestPermission from the bridge's own UID — the system prompt names
+     "Carlink2 USB Bridge", and the bridge stays the only USB owner. Once per device instance: repeat calls report
+     GRANTED/PENDING/DENIED/NO_DEVICE without re-prompting; a denial sticks until the adapter re-enumerates, so
+     there is no prompt loop. Result receiver re-reads hasPermission rather than trusting the broadcast.
+     getStatus adds prompt=none|<dev>(asked|denied); events "prompt shown/allowed/denied".
+   - Display app: BRIDGE_PERMISSION_GRACE_MS 10 s → 5 s (prompt ~6 s after the first miss). Past grace,
+     openTransport asks the bridge to prompt (status "Approve the USB access prompt"); scheduleReconnect then
+     polls every 1 s (no backoff, no attempt counting, no FGS restart, quiet logs) for up to 2 min. Allow →
+     connects; Deny → "Unplug and replug the adapter". Bridge API 1 → replug message (no prompt).
+   - UNTESTED: not compiled in the authoring environment (no Android SDK); not run on hardware.
+   - Affected: bridge-api ICarlinkBridge.aidl + BridgeContract.kt, bridge PermissionPrompt.kt (new) +
+     BridgeService.kt + build.gradle.kts, app CarlinkManager.kt + usb/BridgeUsbTransport.kt + build.gradle.kts,
+     documents/reference/carlink2_bridge.md.

@@ -50,6 +50,18 @@ class BridgeUsbTransport private constructor(
         ) : OpenResult
     }
 
+    /** Result of [requestPermission]. */
+    enum class PermissionPrompt {
+        GRANTED,
+        PENDING,
+        DENIED,
+        NO_DEVICE,
+
+        /** Bridge older than API 2 — can't prompt; the adapter needs a replug. */
+        UNSUPPORTED,
+        FAILED,
+    }
+
     private val opened = AtomicBoolean(true)
     private val readingLoopActive = AtomicBoolean(false)
     private val input = FileInputStream(stream.fileDescriptor)
@@ -380,6 +392,33 @@ class BridgeUsbTransport private constructor(
                 OpenResult.Failed("bridge rejected this app: ${e.message}")
             } catch (e: Exception) {
                 OpenResult.Failed("bridge call failed: ${e.javaClass.simpleName}: ${e.message}")
+            }
+        }
+
+        /**
+         * Have the bridge show the system USB permission prompt for [deviceName] ([205]). Once
+         * per device instance: later calls only report the state, so this is also how to poll
+         * for the user's answer. Never shows UI of this app's own.
+         */
+        suspend fun requestPermission(
+            context: Context,
+            deviceName: String,
+        ): PermissionPrompt {
+            if (!CarlinkBridge.isInstalled(context)) return PermissionPrompt.FAILED
+            val bridge = CarlinkBridge.connect(context) ?: return PermissionPrompt.FAILED
+            return try {
+                // An older bridge has no such transaction; calling it would read an empty reply as 0.
+                if (bridge.apiVersion < BridgeContract.PERMISSION_PROMPT_API_VERSION) return PermissionPrompt.UNSUPPORTED
+                when (bridge.requestPermission(deviceName)) {
+                    BridgeContract.PERMISSION_GRANTED -> PermissionPrompt.GRANTED
+                    BridgeContract.PERMISSION_PENDING -> PermissionPrompt.PENDING
+                    BridgeContract.PERMISSION_DENIED -> PermissionPrompt.DENIED
+                    BridgeContract.PERMISSION_NO_DEVICE -> PermissionPrompt.NO_DEVICE
+                    else -> PermissionPrompt.FAILED
+                }
+            } catch (e: Exception) {
+                logInfo("[BRIDGE] requestPermission failed: ${e.javaClass.simpleName}: ${e.message}", tag = Logger.Tags.USB)
+                PermissionPrompt.FAILED
             }
         }
     }

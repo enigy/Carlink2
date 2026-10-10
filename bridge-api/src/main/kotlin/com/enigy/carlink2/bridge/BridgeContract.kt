@@ -18,10 +18,19 @@ package com.enigy.carlink2.bridge
  */
 object BridgeContract {
     /** Bump when ICarlinkBridge gains methods; the display app checks [MIN_API_VERSION]. */
-    const val API_VERSION = 1
+    const val API_VERSION = 2
 
     /** Oldest bridge API the display app can drive. */
     const val MIN_API_VERSION = 1
+
+    /** First bridge API with ICarlinkBridge.requestPermission ([205]). */
+    const val PERMISSION_PROMPT_API_VERSION = 2
+
+    // ICarlinkBridge.requestPermission results.
+    const val PERMISSION_GRANTED = 0
+    const val PERMISSION_PENDING = 1
+    const val PERMISSION_DENIED = 2
+    const val PERMISSION_NO_DEVICE = 3
 
     const val BRIDGE_PACKAGE = "android.car.usb.handler"
     const val BRIDGE_SERVICE_CLASS = "com.enigy.carlink2.bridge.BridgeService"

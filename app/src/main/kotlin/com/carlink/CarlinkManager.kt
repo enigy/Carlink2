@@ -152,11 +152,20 @@ class CarlinkManager(
         private const val USB_WAIT_PERIOD_MS = 3000L
         private const val PAIR_TIMEOUT_MS = 15000L
 
-        // How long the bridge may lack permission for the current adapter instance before the
-        // status asks the user to replug it. A re-enumeration within this window hands the
-        // bridge a fresh platform grant on its own. Reconnect backoff (2s, 4s, 8s…) means the
-        // message appears on the attempt ~14s after the first miss.
-        private const val BRIDGE_PERMISSION_GRACE_MS = 10_000L
+        // How long the bridge may lack permission for the current adapter instance before it
+        // shows the system USB permission prompt ([205]). A grant racing a fresh attach lands
+        // well inside this. Reconnect backoff (2s, 4s…) puts the prompt on the attempt ~6s
+        // after the first miss.
+        private const val BRIDGE_PERMISSION_GRACE_MS = 5_000L
+
+        // While the bridge's prompt is on screen, check for the user's answer this often (no
+        // backoff), for at most PROMPT_WAIT_MS; after that the normal holding pattern still
+        // catches a late Allow.
+        private const val PROMPT_POLL_MS = 1_000L
+        private const val PROMPT_WAIT_MS = 120_000L
+
+        private const val PROMPT_STATUS = "Approve the USB access prompt"
+        private const val REPLUG_STATUS = "Unplug and replug the adapter"
 
         // Grace window after a spontaneous phone unplug before we re-initiate the
         // connection. Lets the adapter's autoConn re-pair a transiently-dropped phone
@@ -377,6 +386,12 @@ class CarlinkManager(
     // bridge). Shown instead of the generic reconnect text, which would otherwise overwrite it
     // on every retry. Null when the bridge isn't the blocker.
     @Volatile private var bridgeBlockedStatus: String? = null
+
+    // Adapter instance the bridge's USB permission prompt is on screen for ([205]), and since
+    // when (elapsedRealtime). Null when no answer is awaited.
+    @Volatile private var bridgePromptDevice: String? = null
+
+    @Volatile private var bridgePromptSinceMs = 0L
 
     // Platform AudioManager (distinct from the DualStreamAudioManager `audioManager` field) — used
     // to enter MODE_IN_COMMUNICATION for phone calls (see [enterCommunicationAudioMode]).
@@ -975,6 +990,7 @@ class CarlinkManager(
             logError("Failed to find Carlinkit device", tag = Logger.Tags.USB)
             bridgeNoPermissionSinceMs = 0L
             bridgeBlockedStatus = null
+            bridgePromptDevice = null
             setState(State.DISCONNECTED)
             setStatusText("Adapter not found")
             return
@@ -1135,9 +1151,10 @@ class CarlinkManager(
      *
      * The bridge (android.car.usb.handler) receives the platform's fixed-handler grant on every
      * attach that happens while the driver's profile is in the foreground. An adapter that
-     * enumerated earlier in boot (system user current) is never granted to it; replugging the
-     * adapter re-attaches it and brings the grant (on-truck v202 log, 2026-10-09: /001/009
-     * perm=false for 4 min after a cold start; after a replug /001/011 perm=true, 20 min clean).
+     * enumerated earlier in boot (system user current) is never granted to it (on-truck v202
+     * log, 2026-10-09: /001/009 perm=false for 4 min after a cold start; after a replug
+     * /001/011 perm=true, 20 min clean). For that, after [BRIDGE_PERMISSION_GRACE_MS] the bridge
+     * shows the system permission prompt once ([promptForBridgePermission]); a replug also works.
      * Returns null after setting state + status when the bridge can't open the adapter; the
      * reconnect loop retries, and an attach broadcast ([onUsbDeviceAttached]) retries at once.
      */
@@ -1147,6 +1164,7 @@ class CarlinkManager(
                 is BridgeUsbTransport.OpenResult.Opened -> {
                     bridgeNoPermissionSinceMs = 0L
                     bridgeBlockedStatus = null
+                    bridgePromptDevice = null
                     logInfo("[BRIDGE] Adapter ${device.deviceName} opened through the bridge", tag = Logger.Tags.USB)
                     return result.transport
                 }
@@ -1170,10 +1188,10 @@ class CarlinkManager(
                     }
                     logWarn(
                         "[BRIDGE] Bridge still has no permission for ${device.deviceName} after ${waitedMs}ms — " +
-                            "adapter likely enumerated before the driver profile; needs a replug",
+                            "adapter likely enumerated before the driver profile; asking the bridge to prompt",
                         tag = Logger.Tags.USB,
                     )
-                    "Unplug and replug the adapter"
+                    promptForBridgePermission(device.deviceName)
                 }
                 is BridgeUsbTransport.OpenResult.Failed -> {
                     logWarn("[BRIDGE] ${result.reason} — retrying", tag = Logger.Tags.USB)
@@ -1186,6 +1204,40 @@ class CarlinkManager(
         setStatusText(blocked)
         return null
     }
+
+    /**
+     * The bridge lacks permission past the grace window: have it show the system USB permission
+     * prompt ([205]) — once per adapter instance, so a Deny never turns into a prompt loop.
+     * Returns the status to show. While the prompt is up, [scheduleReconnect] checks for the
+     * answer every [PROMPT_POLL_MS] through [bridgeReady].
+     */
+    private suspend fun promptForBridgePermission(deviceName: String): String =
+        when (val prompt = BridgeUsbTransport.requestPermission(context, deviceName)) {
+            BridgeUsbTransport.PermissionPrompt.GRANTED,
+            BridgeUsbTransport.PermissionPrompt.PENDING,
+            -> {
+                if (bridgePromptDevice != deviceName) {
+                    bridgePromptDevice = deviceName
+                    bridgePromptSinceMs = android.os.SystemClock.elapsedRealtime()
+                    logInfo("[BRIDGE] USB permission prompt up for $deviceName — waiting for the user", tag = Logger.Tags.USB)
+                }
+                PROMPT_STATUS
+            }
+            BridgeUsbTransport.PermissionPrompt.DENIED -> {
+                logWarn("[BRIDGE] USB permission was denied for $deviceName — replug to be asked again", tag = Logger.Tags.USB)
+                REPLUG_STATUS
+            }
+            BridgeUsbTransport.PermissionPrompt.UNSUPPORTED -> {
+                logWarn("[BRIDGE] Bridge is too old to prompt (needs bridge v3) — replug needed", tag = Logger.Tags.USB)
+                REPLUG_STATUS
+            }
+            BridgeUsbTransport.PermissionPrompt.NO_DEVICE,
+            BridgeUsbTransport.PermissionPrompt.FAILED,
+            -> {
+                logWarn("[BRIDGE] Couldn't ask for USB permission for $deviceName ($prompt)", tag = Logger.Tags.USB)
+                REPLUG_STATUS
+            }
+        }
 
     /**
      * Stop and disconnect.
@@ -1659,6 +1711,7 @@ class CarlinkManager(
     fun onUsbDeviceAttached() {
         bridgeNoPermissionSinceMs = 0L // new device instance → fresh grace window
         bridgeBlockedStatus = null
+        bridgePromptDevice = null
         if (state != State.DISCONNECTED || suspendedForScreenOff) {
             logInfo("[USB] Adapter attached — state=$state, not reconnecting", tag = Logger.Tags.USB)
             return
@@ -3288,9 +3341,12 @@ class CarlinkManager(
         // attempts failed, the app gave up, and sat stranded 14 min until Reset Device. The
         // screen-off gate above halts this entirely when the truck is off (battery-safe), and
         // onScreenOn() re-kicks it.
-        val holdingPattern = reconnectAttempts >= MAX_RECONNECT_ATTEMPTS
-        // A bridge blocker (replug the adapter, install the bridge) is the one thing the user
-        // can act on — keep it on screen instead of the generic retry text.
+        // The bridge's USB permission prompt is on screen ([205]): check for the answer every
+        // PROMPT_POLL_MS with no backoff or attempt counting, so Allow connects right away.
+        val promptPending = bridgePromptDevice != null
+        val holdingPattern = !promptPending && reconnectAttempts >= MAX_RECONNECT_ATTEMPTS
+        // A bridge blocker (approve the prompt, replug the adapter, install the bridge) is the
+        // one thing the user can act on — keep it on screen instead of the generic retry text.
         val blockedStatus = bridgeBlockedStatus
         if (holdingPattern) {
             // Clamp so the backoff delay stays pinned at the 30s cap (and `1L shl` can never
@@ -3313,17 +3369,22 @@ class CarlinkManager(
             setStatusText(holdMessage)
         }
 
-        // Maintain foreground priority during reconnect delay to prevent LMK kill
-        CarlinkMediaBrowserService.startConnectionForeground(context)
+        // Maintain foreground priority during reconnect delay to prevent LMK kill. Skipped for
+        // the once-a-second prompt checks: the attempts before the prompt already started it.
+        if (!promptPending) CarlinkMediaBrowserService.startConnectionForeground(context)
 
         // Calculate delay with exponential backoff, capped at max
         val delay =
-            minOf(
-                INITIAL_RECONNECT_DELAY_MS * (1L shl reconnectAttempts),
-                MAX_RECONNECT_DELAY_MS,
-            )
+            if (promptPending) {
+                PROMPT_POLL_MS
+            } else {
+                minOf(
+                    INITIAL_RECONNECT_DELAY_MS * (1L shl reconnectAttempts),
+                    MAX_RECONNECT_DELAY_MS,
+                )
+            }
 
-        if (!holdingPattern) {
+        if (!holdingPattern && !promptPending) {
             reconnectAttempts++
             logInfo(
                 "[RECONNECT] Scheduling attempt $reconnectAttempts/$MAX_RECONNECT_ATTEMPTS in ${delay}ms",
@@ -3343,7 +3404,10 @@ class CarlinkManager(
                     // Connecting → Disconnected on every retry.
                     val blocked = bridgeBlockedStatus
                     if (blocked != null && !withContext(Dispatchers.IO) { bridgeReady() }) {
-                        logInfo("[RECONNECT] Still blocked (\"$blocked\") — waiting", tag = Logger.Tags.USB)
+                        // Silent during the once-a-second prompt checks.
+                        if (bridgePromptDevice == null) {
+                            logInfo("[RECONNECT] Still blocked (\"$blocked\") — waiting", tag = Logger.Tags.USB)
+                        }
                         scheduleReconnect()
                         return@launch
                     }
@@ -3372,11 +3436,44 @@ class CarlinkManager(
 
     /**
      * True once an adapter is attached and the bridge holds permission for it — i.e. a
-     * [start] would get past [openTransport]. No UI, no state change. Blocking Binder calls:
-     * call off the main thread.
+     * [start] would get past [openTransport]. While the bridge's permission prompt is up it
+     * also collects the user's answer: Deny switches the status to the replug message. No
+     * state change. Blocking Binder calls: call off the main thread.
      */
     private suspend fun bridgeReady(): Boolean {
-        val device = AdapterDevices.findFirst(usbManager) ?: return false
+        val device = AdapterDevices.findFirst(usbManager)
+        if (device == null) {
+            bridgePromptDevice = null // adapter gone; its attach will reconnect
+            return false
+        }
+        val promptDevice = bridgePromptDevice
+        if (promptDevice != null) {
+            val waitedMs = android.os.SystemClock.elapsedRealtime() - bridgePromptSinceMs
+            if (promptDevice != device.deviceName || waitedMs > PROMPT_WAIT_MS) {
+                // Re-enumerated, or no answer for a while: back to normal retries, which still
+                // pick up a late Allow.
+                bridgePromptDevice = null
+            } else {
+                when (BridgeUsbTransport.requestPermission(context, promptDevice)) {
+                    BridgeUsbTransport.PermissionPrompt.GRANTED -> {
+                        bridgePromptDevice = null
+                        logInfo("[BRIDGE] USB permission allowed for $promptDevice — connecting", tag = Logger.Tags.USB)
+                        return true
+                    }
+                    BridgeUsbTransport.PermissionPrompt.PENDING -> return false
+                    BridgeUsbTransport.PermissionPrompt.DENIED -> {
+                        bridgePromptDevice = null
+                        logWarn("[BRIDGE] USB permission denied for $promptDevice — replug to be asked again", tag = Logger.Tags.USB)
+                        bridgeBlockedStatus = REPLUG_STATUS
+                        setStatusText(REPLUG_STATUS)
+                        return false
+                    }
+                    else -> {
+                        bridgePromptDevice = null
+                    }
+                }
+            }
+        }
         if (!CarlinkBridge.isInstalled(context)) return false
         val bridge = CarlinkBridge.connect(context) ?: return false
         return runCatching { bridge.hasPermission(device.deviceName) }.getOrDefault(false)

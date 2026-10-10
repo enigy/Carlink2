@@ -18,13 +18,15 @@ import android.util.Log
 
 /**
  * The display app binds here for the adapter. This service holds no state of its own beyond
- * the [UsbSession]; USB permission arrives from the platform's fixed-handler grant, never
- * from a dialog.
+ * the [UsbSession] and the [PermissionPrompt]. USB permission normally arrives from the
+ * platform's fixed-handler grant; the prompt is only for an adapter that attached during boot
+ * and so missed that grant ([205]).
  */
 class BridgeService : Service() {
     private lateinit var usbManager: UsbManager
     private lateinit var session: UsbSession
     private lateinit var callers: CallerVerifier
+    private lateinit var prompt: PermissionPrompt
 
     private val detachReceiver =
         object : BroadcastReceiver() {
@@ -75,6 +77,11 @@ class BridgeService : Service() {
                 enforceCaller()
                 return describe()
             }
+
+            override fun requestPermission(deviceName: String?): Int {
+                enforceCaller()
+                return prompt.request(deviceName)
+            }
         }
 
     override fun onCreate() {
@@ -82,6 +89,7 @@ class BridgeService : Service() {
         usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
         session = UsbSession(usbManager)
         callers = CallerVerifier(this, BuildConfig.CALLER_CERTS)
+        prompt = PermissionPrompt(this, usbManager).apply { register() }
         val filter = IntentFilter(UsbManager.ACTION_USB_DEVICE_DETACHED)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(detachReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
@@ -104,6 +112,7 @@ class BridgeService : Service() {
     override fun onDestroy() {
         session.close("bridge service destroyed")
         unregisterReceiver(detachReceiver)
+        prompt.unregister()
         super.onDestroy()
     }
 
@@ -134,7 +143,7 @@ class BridgeService : Service() {
             }
         return "bridge api=${BridgeContract.API_VERSION} v=${BuildConfig.VERSION_NAME} " +
             "user=${Process.myUid() / PER_USER_RANGE} handler=${fixedHandlerComponent()} " +
-            "devices=$devices session=$sessionText ${BridgeStats.describe()}"
+            "devices=$devices session=$sessionText ${prompt.describe()} ${BridgeStats.describe()}"
     }
 
     @SuppressLint("DiscouragedApi")

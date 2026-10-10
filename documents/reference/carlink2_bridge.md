@@ -74,7 +74,8 @@ Nothing per frame goes over Binder. The bridge doesn't parse message types, so p
 changes ship through Play and the bridge rarely needs re-sideloading.
 
 `ICarlinkBridge` (bridge-api): `getApiVersion`, `hasPermission(deviceName)`,
-`open(deviceName) → ParcelFileDescriptor`, `write(data, timeoutMs)`, `close`, `getStatus`.
+`open(deviceName) → ParcelFileDescriptor`, `write(data, timeoutMs)`, `close`, `getStatus`,
+and since API 2 (bridge v3, [205]) `requestPermission(deviceName) → PERMISSION_*`.
 Add methods only at the end. Transaction codes follow declaration order, and the two apps
 update independently.
 
@@ -102,9 +103,14 @@ dialog and the boot-time permission probe are gone.
 
 1. Bridge installed and holds permission for the attached `/dev/bus/usb/...` instance →
    open through the bridge. No dialog.
-2. Bridge lacks permission → keep retrying for `BRIDGE_PERMISSION_GRACE_MS` (10 s; with
-   reconnect backoff that is about 14 s after the first miss). A re-enumeration in that window
-   brings a fresh grant. After it, the status reads **"Unplug and replug the adapter"**.
+2. Bridge lacks permission → keep retrying for `BRIDGE_PERMISSION_GRACE_MS` (5 s; with
+   reconnect backoff that is about 6 s after the first miss). A re-enumeration in that window
+   brings a fresh grant. After it, the **bridge** shows the system USB permission prompt
+   ([205]) and the status reads "Approve the USB access prompt". The display app checks for
+   the answer every second (`PROMPT_POLL_MS`, up to 2 min). Allow → connects. Deny → "Unplug
+   and replug the adapter", and the bridge won't ask again for that device instance: a
+   denial sticks until the adapter re-enumerates, so there's no prompt loop. Bridge v2 (API 1)
+   can't prompt → straight to the replug message.
 3. Bridge not installed → "Install the Carlink2 USB bridge". Any other bridge error (bind
    timeout, rejected, open failed) → "USB bridge not responding — retrying…".
 
@@ -129,6 +135,9 @@ sideloaded app can't use.
 streamed for 20 minutes without a drop. Also the likely cause of lvalen91's "worked, then
 stopped" report on PR #15.
 
+Handled by the bridge's one-time prompt (step 2 above): one tap after a cold start. A
+dialog-free fix would need the privileged APIs above.
+
 ## Diagnostics without adb
 
 The bridge can't be inspected directly, so the display app logs the bridge's own status on
@@ -149,16 +158,20 @@ What to check in a log:
 |---|---|---|
 | `handler=` | `android.car.usb.handler/...` | GM changed the overlay; the bridge can't get grants |
 | `user=` | `10` | the bridge is bound in another user |
-| `perm=` on the 1314:xxxx device | `true` | grant missed (see known issue); replug the adapter |
+| `perm=` on the 1314:xxxx device | `true` | grant missed (see known issue); the prompt should follow |
+| `prompt=` (v3) | `none` | `…(asked)` = prompt shown (allowed or still up); `…(denied)` = replug to be asked again |
 | `icons(insert=…)` during nav | climbing | the host isn't reaching the bridge's provider |
 | `insert` vs `pictures` vs `ids` (v2) | `pictures` ≈ steps driven | `ids` ≈ `insert` ⇒ host mints an id per tick (v2's URIs cover it) |
 | `open` vs `relays=` in `[NAV_HEALTH]` | `open` ≪ `relays` | the HUD re-reads the icon every tick |
 | `[NAVI_ICON] Cluster icon provider available via android.car.usb.handler` | present at startup | the `<queries>` entry or the bridge is missing |
 
 Other lines: `[BRIDGE] Adapter … opened through the bridge`, `[BRIDGE] Bridge has no
-permission … retrying`, `[BRIDGE] Bridge still has no permission … needs a replug`,
+permission … retrying`, `[BRIDGE] Bridge still has no permission … asking the bridge to
+prompt`, `[BRIDGE] USB permission prompt up for …`, `[BRIDGE] USB permission allowed for … —
+connecting`, `[BRIDGE] USB permission denied for … — replug to be asked again`,
 `[RECONNECT] Still blocked (…) — waiting`, `[USB] Adapter attached while disconnected —
-reconnecting`, `[BRIDGE] Bridge stream ended: …`.
+reconnecting`, `[BRIDGE] Bridge stream ended: …`. Bridge events: `prompt shown …`,
+`prompt allowed …` / `prompt denied …`.
 
 ## Install
 

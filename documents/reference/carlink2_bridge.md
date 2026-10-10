@@ -32,7 +32,7 @@ screen. So the work splits:
 |---|---|---|
 | Installed by | Play | USB drive (sideload) |
 | UI | everything | none (no activity, no launcher icon) |
-| USB | fallback only (dialog) | owns the adapter: open, claim, read, write |
+| USB | never opens it, never asks permission ([204]) | owns the adapter: open, claim, read, write |
 | Cluster icons | sends CarIcons through the Car App Library | hosts `ClusterIconContentProvider` |
 | Protocol knowledge | all of it | 16-byte header framing only |
 
@@ -93,31 +93,41 @@ carlink2.callerCerts=AB:CD:...:EF
 
 Several fingerprints can be listed, comma-separated (e.g. the upload key for a sideloaded
 debug build of the display app). If you pin the Play key, a display app signed with anything
-else is rejected and falls back to the direct USB path.
+else is rejected and can't connect.
 
 ## Connection logic (CarlinkManager.openTransport)
 
-1. Bridge not installed → direct USB (old behavior, dialog).
-2. Bridge installed and holds permission for the attached `/dev/bus/usb/...` instance →
+The bridge is the only path ([204]). The display app's direct-USB fallback, its permission
+dialog and the boot-time permission probe are gone.
+
+1. Bridge installed and holds permission for the attached `/dev/bus/usb/...` instance →
    open through the bridge. No dialog.
-3. Bridge lacks permission → retry through the bridge for `BRIDGE_PERMISSION_GRACE_MS`
-   (10 s; with reconnect backoff the fallback lands about 14 s after the first miss). A
-   re-enumeration in that window brings a fresh grant. After it, fall back to direct USB with
-   the dialog.
-4. Any bridge error (bind timeout, rejected, open failed) → direct USB.
+2. Bridge lacks permission → keep retrying for `BRIDGE_PERMISSION_GRACE_MS` (10 s; with
+   reconnect backoff that is about 14 s after the first miss). A re-enumeration in that window
+   brings a fresh grant. After it, the status reads **"Unplug and replug the adapter"**.
+3. Bridge not installed → "Install the Carlink2 USB bridge". Any other bridge error (bind
+   timeout, rejected, open failed) → "USB bridge not responding — retrying…".
 
-When the bridge is installed, the boot-time permission probe in `CarlinkMediaBrowserService`
-is skipped, so the display app doesn't put up a dialog the bridge doesn't need.
+While blocked (2 or 3), the reconnect loop checks the bridge quietly and only starts a
+connection once it could succeed, so the screen holds the message instead of cycling
+Connecting → Disconnected. An adapter attach broadcast reconnects at once (after the 2.5 s
+wake settle).
 
-## Known risk: the grant may land on the wrong user
+## Known issue: an adapter that enumerates during boot is never granted
 
 `deviceAttachedForFixedHandler()` grants permission to the package as it exists in the user
 that is current **at the moment of attach**. On AAOS the headless system user (0) is current
-during early boot, before the switch to the driver (user 10). If the adapter enumerates in
-that window, the grant goes to user 0's copy of the bridge (or nowhere) and the user-10
-bridge has no permission until the adapter re-enumerates. This is the leading theory for
-lvalen91's "worked, then stopped" report on PR #15. **Not verified.** Step 3 above is
-the mitigation. The diagnostics below will show whether it happens.
+during early boot, before the switch to the driver (user 12 on the truck). If the adapter
+enumerates in that window, the grant goes to user 0's copy of the bridge (or nowhere: the
+bridge is only installed for the driver) and the driver's bridge has no permission until the
+adapter re-enumerates. Android doesn't re-run attach handling on the user switch; the stock
+car USB handler covers this with privileged APIs (`BootUsbService`, `grantPermission`) a
+sideloaded app can't use.
+
+**Verified on the truck, 2026-10-09 (v202):** after a cold start the adapter was
+`/001/009 perm=false` for 4 minutes. A replug brought it back as `/001/011 perm=true` and it
+streamed for 20 minutes without a drop. Also the likely cause of lvalen91's "worked, then
+stopped" report on PR #15.
 
 ## Diagnostics without adb
 
@@ -139,15 +149,16 @@ What to check in a log:
 |---|---|---|
 | `handler=` | `android.car.usb.handler/...` | GM changed the overlay; the bridge can't get grants |
 | `user=` | `10` | the bridge is bound in another user |
-| `perm=` on the 1314:xxxx device | `true` | grant missed (see known risk); expect fallback |
+| `perm=` on the 1314:xxxx device | `true` | grant missed (see known issue); replug the adapter |
 | `icons(insert=…)` during nav | climbing | the host isn't reaching the bridge's provider |
 | `insert` vs `pictures` vs `ids` (v2) | `pictures` ≈ steps driven | `ids` ≈ `insert` ⇒ host mints an id per tick (v2's URIs cover it) |
 | `open` vs `relays=` in `[NAV_HEALTH]` | `open` ≪ `relays` | the HUD re-reads the icon every tick |
 | `[NAVI_ICON] Cluster icon provider available via android.car.usb.handler` | present at startup | the `<queries>` entry or the bridge is missing |
 
 Other lines: `[BRIDGE] Adapter … opened through the bridge`, `[BRIDGE] Bridge has no
-permission … retrying`, `[BRIDGE] … falling back to direct USB`, `[BRIDGE] Bridge stream
-ended: …`.
+permission … retrying`, `[BRIDGE] Bridge still has no permission … needs a replug`,
+`[RECONNECT] Still blocked (…) — waiting`, `[USB] Adapter attached while disconnected —
+reconnecting`, `[BRIDGE] Bridge stream ended: …`.
 
 ## Install
 
@@ -157,8 +168,9 @@ ended: …`.
    stay, but two apps fighting over the adapter is not a useful test.
 2. Sideload `bridge-release.apk` from the USB drive.
 3. Install Carlink2 from Play (internal testing track).
-4. Unplug and replug the adapter, or power-cycle the head unit, so the platform runs the
-   fixed handler with the bridge present.
+4. Once the head unit has fully started, unplug and replug the adapter so the platform runs
+   the fixed handler with the bridge present. (A head-unit power cycle doesn't do it: the
+   adapter enumerates before the driver's profile is up. See the known issue.)
 5. Launch Carlink2 while parked and export a log.
 
 ## Build

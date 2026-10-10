@@ -1,6 +1,7 @@
 package com.carlink
 
 import android.content.Context
+import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.media.AudioManager
 import android.os.PowerManager
@@ -52,9 +53,9 @@ import com.carlink.protocol.VideoStreamingSignal
 import com.carlink.ui.settings.AdapterConfigPreference
 import com.carlink.ui.settings.MicSourceConfig
 import com.carlink.ui.settings.WiFiBandConfig
+import com.carlink.usb.AdapterDevices
 import com.carlink.usb.BridgeUsbTransport
 import com.carlink.usb.CarlinkBridge
-import com.carlink.usb.UsbDeviceWrapper
 import com.carlink.usb.UsbTransport
 import com.carlink.util.AppExecutors
 import com.carlink.util.LogCallback
@@ -151,10 +152,10 @@ class CarlinkManager(
         private const val USB_WAIT_PERIOD_MS = 3000L
         private const val PAIR_TIMEOUT_MS = 15000L
 
-        // How long to keep retrying through the bridge when it lacks permission for the current
-        // adapter instance before falling back to this app's own USB permission dialog. A
-        // re-enumeration within this window hands the bridge a fresh platform grant. Reconnect
-        // backoff (2s, 4s, 8s…) means the fallback lands on the attempt ~14s after the first miss.
+        // How long the bridge may lack permission for the current adapter instance before the
+        // status asks the user to replug it. A re-enumeration within this window hands the
+        // bridge a fresh platform grant on its own. Reconnect backoff (2s, 4s, 8s…) means the
+        // message appears on the attempt ~14s after the first miss.
         private const val BRIDGE_PERMISSION_GRACE_MS = 10_000L
 
         // Grace window after a spontaneous phone unplug before we re-initiate the
@@ -365,12 +366,17 @@ class CarlinkManager(
     // USB
     private val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
 
-    // The open transport: the bridge normally, this app's own UsbDeviceWrapper as fallback.
+    // The open transport — always the bridge ([204]).
     private var usbTransport: UsbTransport? = null
 
     // elapsedRealtime of the first bridge attempt that found the bridge without permission for
     // the attached adapter; 0 = not currently in that state. See BRIDGE_PERMISSION_GRACE_MS.
     private var bridgeNoPermissionSinceMs = 0L
+
+    // What the user must do when the bridge can't open the adapter (replug it, install the
+    // bridge). Shown instead of the generic reconnect text, which would otherwise overwrite it
+    // on every retry. Null when the bridge isn't the blocker.
+    @Volatile private var bridgeBlockedStatus: String? = null
 
     // Platform AudioManager (distinct from the DualStreamAudioManager `audioManager` field) — used
     // to enter MODE_IN_COMMUNICATION for phone calls (see [enterCommunicationAudioMode]).
@@ -968,6 +974,7 @@ class CarlinkManager(
         if (device == null) {
             logError("Failed to find Carlinkit device", tag = Logger.Tags.USB)
             bridgeNoPermissionSinceMs = 0L
+            bridgeBlockedStatus = null
             setState(State.DISCONNECTED)
             setStatusText("Adapter not found")
             return
@@ -984,7 +991,7 @@ class CarlinkManager(
         //      (the consumer priv-app) currently runs only on the AAOS emulator.
         // The same boolean is mirrored to MessageSerializer (gates naviScreenInfo JSON
         // -> adapter never emits 0x2C without it) and to NaviVideoSingleton (gates the
-        // UsbDeviceWrapper demux split — defense in depth).
+        // BridgeUsbTransport demux split — defense in depth).
         val naviGateEnabled =
             BuildConfig.DEBUG && PlatformDetector.detect(context).isAaosEmulator()
         MessageSerializer.includeNaviScreenInfo = naviGateEnabled
@@ -1123,57 +1130,61 @@ class CarlinkManager(
     }
 
     /**
-     * Open the adapter through the sideloaded bridge when possible, otherwise directly.
+     * Open the adapter through the sideloaded bridge — the only path since [204]; this app
+     * never opens USB or shows a permission dialog itself.
      *
      * The bridge (android.car.usb.handler) receives the platform's fixed-handler grant on every
-     * attach, so it normally opens with no dialog. When it lacks permission for this device
-     * instance (suspected cause: the adapter enumerated while the system user was current, before
-     * the switch to the driver profile), keep retrying through it for [BRIDGE_PERMISSION_GRACE_MS]
-     * in case a re-enumeration brings a fresh grant, then fall back to this app's own permission
-     * dialog. Returns null after setting state + status when nothing could be opened.
+     * attach that happens while the driver's profile is in the foreground. An adapter that
+     * enumerated earlier in boot (system user current) is never granted to it; replugging the
+     * adapter re-attaches it and brings the grant (on-truck v202 log, 2026-10-09: /001/009
+     * perm=false for 4 min after a cold start; after a replug /001/011 perm=true, 20 min clean).
+     * Returns null after setting state + status when the bridge can't open the adapter; the
+     * reconnect loop retries, and an attach broadcast ([onUsbDeviceAttached]) retries at once.
      */
-    private suspend fun openTransport(device: UsbDeviceWrapper): UsbTransport? {
-        when (val result = BridgeUsbTransport.open(context, device.deviceName)) {
-            is BridgeUsbTransport.OpenResult.Opened -> {
-                bridgeNoPermissionSinceMs = 0L
-                logInfo("[BRIDGE] Adapter ${device.deviceName} opened through the bridge", tag = Logger.Tags.USB)
-                return result.transport
-            }
-            BridgeUsbTransport.OpenResult.NotInstalled -> {
-                logWarn("[BRIDGE] Bridge not installed — opening the adapter directly", tag = Logger.Tags.USB)
-            }
-            BridgeUsbTransport.OpenResult.NoPermission -> {
-                val now = android.os.SystemClock.elapsedRealtime()
-                if (bridgeNoPermissionSinceMs == 0L) bridgeNoPermissionSinceMs = now
-                val waitedMs = now - bridgeNoPermissionSinceMs
-                if (waitedMs < BRIDGE_PERMISSION_GRACE_MS) {
+    private suspend fun openTransport(device: UsbDevice): UsbTransport? {
+        val blocked =
+            when (val result = BridgeUsbTransport.open(context, device.deviceName)) {
+                is BridgeUsbTransport.OpenResult.Opened -> {
+                    bridgeNoPermissionSinceMs = 0L
+                    bridgeBlockedStatus = null
+                    logInfo("[BRIDGE] Adapter ${device.deviceName} opened through the bridge", tag = Logger.Tags.USB)
+                    return result.transport
+                }
+                BridgeUsbTransport.OpenResult.NotInstalled -> {
+                    logWarn("[BRIDGE] Bridge not installed — cannot open the adapter", tag = Logger.Tags.USB)
+                    "Install the Carlink2 USB bridge"
+                }
+                BridgeUsbTransport.OpenResult.NoPermission -> {
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    if (bridgeNoPermissionSinceMs == 0L) bridgeNoPermissionSinceMs = now
+                    val waitedMs = now - bridgeNoPermissionSinceMs
+                    if (waitedMs < BRIDGE_PERMISSION_GRACE_MS) {
+                        logWarn(
+                            "[BRIDGE] Bridge has no permission for ${device.deviceName} yet " +
+                                "(${waitedMs}ms of ${BRIDGE_PERMISSION_GRACE_MS}ms grace) — retrying",
+                            tag = Logger.Tags.USB,
+                        )
+                        setState(State.DISCONNECTED)
+                        setStatusText("Waiting for USB bridge…")
+                        return null
+                    }
                     logWarn(
-                        "[BRIDGE] Bridge has no permission for ${device.deviceName} yet " +
-                            "(${waitedMs}ms of ${BRIDGE_PERMISSION_GRACE_MS}ms grace) — retrying",
+                        "[BRIDGE] Bridge still has no permission for ${device.deviceName} after ${waitedMs}ms — " +
+                            "adapter likely enumerated before the driver profile; needs a replug",
                         tag = Logger.Tags.USB,
                     )
-                    setState(State.DISCONNECTED)
-                    setStatusText("Waiting for USB bridge…")
-                    return null
+                    "Unplug and replug the adapter"
                 }
-                logWarn(
-                    "[BRIDGE] Bridge still has no permission for ${device.deviceName} after ${waitedMs}ms — " +
-                        "falling back to direct USB (permission dialog)",
-                    tag = Logger.Tags.USB,
-                )
+                is BridgeUsbTransport.OpenResult.Failed -> {
+                    logWarn("[BRIDGE] ${result.reason} — retrying", tag = Logger.Tags.USB)
+                    "USB bridge not responding — retrying…"
+                }
             }
-            is BridgeUsbTransport.OpenResult.Failed -> {
-                logWarn("[BRIDGE] ${result.reason} — opening the adapter directly", tag = Logger.Tags.USB)
-            }
-        }
 
-        if (!device.openWithPermission()) {
-            logError("Failed to open USB device", tag = Logger.Tags.USB)
-            setState(State.DISCONNECTED)
-            setStatusText("USB permission denied")
-            return null
-        }
-        return device
+        bridgeBlockedStatus = blocked
+        setState(State.DISCONNECTED)
+        setStatusText(blocked)
+        return null
     }
 
     /**
@@ -1639,6 +1650,25 @@ class CarlinkManager(
     }
 
     /**
+     * A Carlinkit adapter attached (MainActivity's USB receiver). An attach while the driver's
+     * profile is in the foreground is what gives the bridge its platform grant, so this ends a
+     * "replug the adapter" wait: connect now rather than at the next 30s holding-pattern retry.
+     * Goes through the wake settle so enumeration and the grant (issued by the platform right
+     * after this broadcast) have landed first.
+     */
+    fun onUsbDeviceAttached() {
+        bridgeNoPermissionSinceMs = 0L // new device instance → fresh grace window
+        bridgeBlockedStatus = null
+        if (state != State.DISCONNECTED || suspendedForScreenOff) {
+            logInfo("[USB] Adapter attached — state=$state, not reconnecting", tag = Logger.Tags.USB)
+            return
+        }
+        logInfo("[USB] Adapter attached while disconnected — reconnecting", tag = Logger.Tags.USB)
+        cancelReconnect()
+        scheduleWakeConnect()
+    }
+
+    /**
      * Resets the H.264 video decoder/renderer.
      *
      * This operation resets the MediaCodec decoder without disconnecting the USB device.
@@ -1988,12 +2018,12 @@ class CarlinkManager(
         }
     }
 
-    private suspend fun findDevice(): UsbDeviceWrapper? {
-        var device: UsbDeviceWrapper? = null
+    private suspend fun findDevice(): UsbDevice? {
+        var device: UsbDevice? = null
         var attempts = 0
 
         while (device == null && attempts < 10) {
-            device = UsbDeviceWrapper.findFirst(context, usbManager) { log(it) }
+            device = AdapterDevices.findFirst(usbManager)
 
             if (device == null) {
                 attempts++
@@ -3252,21 +3282,23 @@ class CarlinkManager(
         }
 
         // HOLDING PATTERN instead of permanent give-up. After the fast backoff attempts we do
-        // NOT stop — we keep retrying at the 30s cap so the app self-heals when the user taps the
-        // USB permission dialog or the adapter/phone recovers, instead of dead-ending and forcing a
-        // manual Reset Device. Observed v164 (2026-06-07): a phone unplug made the adapter go
-        // silent and re-enumerate /010->/011; the new device path needs a fresh permission grant,
-        // 5 attempts timed out (user not looking), the app gave up, and sat stranded 14 min with NO
-        // dialog showing until Reset Device. In the holding pattern the dialog stays available so a
-        // single tap recovers it. The screen-off gate above halts this entirely when the truck is
-        // off (battery-safe), and onScreenOn() re-kicks it.
+        // NOT stop — we keep retrying at the 30s cap so the app self-heals when the adapter/phone
+        // recovers, instead of dead-ending and forcing a manual Reset Device. Observed v164
+        // (2026-06-07): a phone unplug made the adapter go silent and re-enumerate /010->/011, 5
+        // attempts failed, the app gave up, and sat stranded 14 min until Reset Device. The
+        // screen-off gate above halts this entirely when the truck is off (battery-safe), and
+        // onScreenOn() re-kicks it.
         val holdingPattern = reconnectAttempts >= MAX_RECONNECT_ATTEMPTS
+        // A bridge blocker (replug the adapter, install the bridge) is the one thing the user
+        // can act on — keep it on screen instead of the generic retry text.
+        val blockedStatus = bridgeBlockedStatus
         if (holdingPattern) {
             // Clamp so the backoff delay stays pinned at the 30s cap (and `1L shl` can never
             // overflow) and the cadence doesn't escalate. consecutiveNoResponse /
             // shortLivedStreamingCount are intentionally NOT reset so escalation context survives.
             reconnectAttempts = MAX_RECONNECT_ATTEMPTS
             val holdMessage = when {
+                blockedStatus != null -> blockedStatus
                 consecutiveNoResponse >= 2 -> "Adapter not responding — retrying…"
                 shortLivedStreamingCount >= SHORT_SESSION_ESCALATION_COUNT -> "Connection unstable — retrying…"
                 hadPriorSession -> "Phone not reconnecting — retrying…"
@@ -3297,7 +3329,7 @@ class CarlinkManager(
                 "[RECONNECT] Scheduling attempt $reconnectAttempts/$MAX_RECONNECT_ATTEMPTS in ${delay}ms",
                 tag = Logger.Tags.USB,
             )
-            setStatusText("Reconnecting ($reconnectAttempts/$MAX_RECONNECT_ATTEMPTS)...")
+            setStatusText(blockedStatus ?: "Reconnecting ($reconnectAttempts/$MAX_RECONNECT_ATTEMPTS)...")
         }
 
         reconnectJob =
@@ -3306,6 +3338,15 @@ class CarlinkManager(
 
                 // Only attempt if still disconnected
                 if (state == State.DISCONNECTED) {
+                    // Blocked on the bridge: check quietly, and only run start() once it could
+                    // succeed — so the screen holds the replug message instead of cycling
+                    // Connecting → Disconnected on every retry.
+                    val blocked = bridgeBlockedStatus
+                    if (blocked != null && !withContext(Dispatchers.IO) { bridgeReady() }) {
+                        logInfo("[RECONNECT] Still blocked (\"$blocked\") — waiting", tag = Logger.Tags.USB)
+                        scheduleReconnect()
+                        return@launch
+                    }
                     logInfo("[RECONNECT] Attempting reconnection...", tag = Logger.Tags.USB)
                     try {
                         withContext(Dispatchers.IO) { start() }
@@ -3327,6 +3368,18 @@ class CarlinkManager(
                     reconnectAttempts = 0
                 }
             }
+    }
+
+    /**
+     * True once an adapter is attached and the bridge holds permission for it — i.e. a
+     * [start] would get past [openTransport]. No UI, no state change. Blocking Binder calls:
+     * call off the main thread.
+     */
+    private suspend fun bridgeReady(): Boolean {
+        val device = AdapterDevices.findFirst(usbManager) ?: return false
+        if (!CarlinkBridge.isInstalled(context)) return false
+        val bridge = CarlinkBridge.connect(context) ?: return false
+        return runCatching { bridge.hasPermission(device.deviceName) }.getOrDefault(false)
     }
 
     /**
@@ -3516,7 +3569,7 @@ class CarlinkManager(
             ) {
                 val renderer =
                     h264Renderer ?: run {
-                        // Data already read by UsbDeviceWrapper — just discard by returning
+                        // Data already read by the transport — just discard by returning
                         val now = System.currentTimeMillis()
                         if (now - lastVideoDiscardWarningTime > 2000) {
                             lastVideoDiscardWarningTime = now

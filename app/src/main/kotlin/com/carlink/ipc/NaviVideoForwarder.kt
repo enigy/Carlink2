@@ -11,7 +11,7 @@ import com.carlink.logging.logInfo
 /**
  * Forwards CPC200-CCPA AltVideo (USB MsgType 0x2C) frames to bound consumer sinks.
  *
- * UsbDeviceWrapper hands us the raw 0x2C payload (the 20-byte video header
+ * BridgeUsbTransport hands us the raw 0x2C payload (the 20-byte video header
  * followed by H.264 Annex-B NAL units). We parse the header, strip it, and
  * broadcast the Annex-B bytes via {@link INaviVideoSink}.
  *
@@ -46,7 +46,7 @@ class NaviVideoForwarder {
     /**
      * Called per 0x2C USB packet. [data] is the pre-allocated USB read buffer
      * starting at the 20-byte video header (i.e. the 16-byte USB header is
-     * already stripped by UsbDeviceWrapper).
+     * already stripped by BridgeUsbTransport).
      *
      * The Annex-B payload is COPIED out before broadcast so the USB buffer can
      * be reused immediately for the next read — AIDL oneway dispatch is
@@ -243,14 +243,14 @@ class NaviVideoForwarder {
 }
 
 /**
- * Holds the single process-wide [NaviVideoForwarder]. UsbDeviceWrapper writes
+ * Holds the single process-wide [NaviVideoForwarder]. BridgeUsbTransport writes
  * into it; NaviVideoSourceService reads from it. Stays alive for the life of
  * the process — there is no teardown path because the forwarder owns no
  * resources (RemoteCallbackList cleans itself via linkToDeath).
  *
  * [enabled] is the runtime gate that's set ONCE at CarlinkManager startup
  * based on `BuildConfig.DEBUG && PlatformDetector.isAaosEmulator()`. When
- * false, UsbDeviceWrapper drops 0x2C frames (defense in depth — the adapter
+ * false, BridgeUsbTransport drops 0x2C frames (defense in depth — the adapter
  * shouldn't be emitting them anyway, because MessageSerializer also gates the
  * `naviScreenInfo` BoxSettings JSON on the same condition) and MessageSerializer
  * skips the `naviScreenInfo` field. Production APKs and real-device debug APKs
@@ -259,7 +259,7 @@ class NaviVideoForwarder {
 object NaviVideoSingleton {
     val forwarder: NaviVideoForwarder = NaviVideoForwarder()
 
-    /** Single source of truth for the emulator+debug gate. Read by UsbDeviceWrapper + MessageSerializer. */
+    /** Single source of truth for the emulator+debug gate. Read by BridgeUsbTransport + MessageSerializer. */
     @Volatile
     var enabled: Boolean = false
 }

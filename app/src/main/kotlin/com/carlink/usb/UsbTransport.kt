@@ -3,10 +3,9 @@ package com.carlink.usb
 /**
  * Byte path to the CPC200 adapter, as [com.carlink.protocol.AdapterDriver] sees it.
  *
- * - [BridgeUsbTransport]: the sideloaded bridge (android.car.usb.handler) owns the USB device
- *   and its platform-granted permission. The normal path.
- * - [UsbDeviceWrapper]: this app opens the device itself behind the USB permission dialog.
- *   Fallback for when the bridge is missing or has not been granted the current device.
+ * The only implementation is [BridgeUsbTransport]: the sideloaded bridge
+ * (android.car.usb.handler) owns the USB device and its platform-granted permission. This
+ * app's own direct-USB fallback, with its permission dialog, was removed in [204].
  */
 interface UsbTransport {
     val isOpened: Boolean

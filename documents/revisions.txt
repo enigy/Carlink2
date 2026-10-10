@@ -1380,3 +1380,25 @@
    - UNTESTED: not compiled in the authoring environment (no Android SDK); not run on hardware.
    - Affected: navigation/compose/JunctionTurnComposer.kt (new), ManeuverComposer.kt, ComposedIconStore.kt,
      navigation/ManeuverMapper.kt, app/build.gradle.kts.
+
+[204] :: Display app never touches USB — direct-USB fallback and its permission dialog removed; replug status.
+   - On-truck (v202, 2026-10-09): after a truck power-cycle the bridge had no permission for the adapter
+     (/001/009 perm=false for 4 min). The display app fell back to its own dialog every retry (denied/timed out),
+     alternating with bridge attempts — the "trading back and forth" and the Connecting/Disconnected loop. After
+     a replug the adapter came back as /001/011 perm=true and streamed 20 min through the bridge, no drops.
+   - Cause (confirms the [200] known risk): the adapter enumerates during boot while the system user is current,
+     so the fixed-handler grant misses the driver's bridge; Android doesn't redo it on the user switch.
+   - Removed: UsbDeviceWrapper (direct transport + requestPermission), CarlinkManager's direct-open fallback,
+     CarlinkMediaBrowserService's boot permission probe. New AdapterDevices for discovery (no permission needed).
+     BridgeUsbTransport takes over the PTS helper and the timeout rationale.
+   - When the bridge can't open: after the 10 s grace the status reads "Unplug and replug the adapter" (or
+     "Install the Carlink2 USB bridge" / "USB bridge not responding — retrying…") and stays there; retries check
+     the bridge quietly and only start a connection once it could succeed (no Connecting/Disconnected cycling).
+   - MainActivity's USB receiver now also takes ACTION_USB_DEVICE_ATTACHED → CarlinkManager.onUsbDeviceAttached()
+     reconnects right away (after the 2.5 s wake settle) instead of at the next 30 s holding-pattern retry.
+   - Boot-race fix itself is still open (needs a decision: bridge-owned one-tap prompt vs. replug).
+   - UNTESTED: not compiled in the authoring environment (no Android SDK); not run on hardware.
+   - Affected: usb/UsbDeviceWrapper.kt (deleted), usb/AdapterDevices.kt (new), usb/BridgeUsbTransport.kt,
+     usb/UsbTransport.kt, CarlinkManager.kt, MainActivity.kt, media/CarlinkMediaBrowserService.kt, comments in
+     MessageTypes/MessageParser/MessageSerializer/NaviVideoForwarder, documents/reference/carlink2_bridge.md,
+     app/build.gradle.kts.

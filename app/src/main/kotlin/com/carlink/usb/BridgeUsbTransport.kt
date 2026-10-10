@@ -22,12 +22,13 @@ import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * [UsbTransport] backed by the sideloaded bridge, which owns the USB device.
+ * [UsbTransport] backed by the sideloaded bridge, which owns the USB device. The only
+ * transport since [204]; this app never opens the adapter itself.
  *
  * Inbound: the bridge forwards complete adapter messages (16-byte header + payload) into a
- * socket; this class reads them and hands them to AdapterDriver exactly as UsbDeviceWrapper
- * does — same video demux, same buffer reuse, same silence detection. Outbound: one Binder
- * call per message.
+ * socket; this class reads them and hands them to AdapterDriver with the video demux, buffer
+ * reuse and silence detection of the old direct-USB reader (UsbDeviceWrapper, removed in
+ * [204]). Outbound: one Binder call per message.
  */
 class BridgeUsbTransport private constructor(
     private val bridge: ICarlinkBridge,
@@ -125,15 +126,17 @@ class BridgeUsbTransport private constructor(
         timeout: Int,
         videoProcessor: UsbTransport.VideoDataProcessor?,
     ) {
-        // Same priority as UsbDeviceWrapper's loop: this thread feeds BOTH audio and video.
+        // This thread feeds BOTH audio and video: keep it at or above the MediaCodec loop's
+        // priority (-10, between URGENT_DISPLAY and URGENT_AUDIO) so audio never starves.
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY - 2)
         log("Reading loop started (bridge)")
 
         val header = ByteArray(HEADER_SIZE)
-        // Reused buffers, same sizes and growth rules as UsbDeviceWrapper.
+        // Reused buffers: no per-frame allocation at 60fps. Growth is monotonic, bounded by
+        // MAX_PAYLOAD_SIZE.
         var videoBuffer = ByteArray(256 * 1024)
-        // REUSE CONTRACT (as in UsbDeviceWrapper): AUDIO_DATA payloads delivered via
-        // onMessage are this buffer; consumers must copy before the next AUDIO_DATA.
+        // REUSE CONTRACT: AUDIO_DATA payloads delivered via onMessage are this buffer;
+        // consumers must copy before the next AUDIO_DATA.
         var audioBuffer = ByteArray(16 * 1024)
 
         var hasReceivedData = false
@@ -143,8 +146,8 @@ class BridgeUsbTransport private constructor(
         try {
             while (readingLoopActive.get() && opened.get()) {
                 if (!awaitReadable(POLL_SLICE_MS)) {
-                    // Silence rules from UsbDeviceWrapper, measured on the socket instead of
-                    // the endpoint: the bridge forwards nothing while the adapter is quiet.
+                    // Silence rules (see the constants), measured on the socket: the bridge
+                    // forwards nothing while the adapter is quiet.
                     val now = SystemClock.elapsedRealtime()
                     if (!hasReceivedData && now - startedMs >= INITIAL_RESPONSE_TIMEOUT_MS) {
                         log("Adapter not responding: no data within ${INITIAL_RESPONSE_TIMEOUT_MS / 1000}s of connection")
@@ -187,8 +190,11 @@ class BridgeUsbTransport private constructor(
                     break
                 }
 
-                // 0x06 → main video pipeline; 0x2C → ClusterHomeDisplay forwarder (gated).
-                // See UsbDeviceWrapper.startReadingLoop for the full demux rationale.
+                // 0x06 → main video pipeline; 0x2C → ClusterHomeDisplay forwarder, accepted only
+                // when NaviVideoSingleton.enabled (debug build on the AAOS emulator); otherwise
+                // 0x2C drains through the non-video branch. Kept separate so a nav-resolution
+                // SPS/PPS never reaches the main decoder. Zero-length video headers fall through
+                // too: that's the VideoStreamingSignal sentinel MessageParser consumes.
                 val isMainVideo = parsed.type == MessageType.VIDEO_DATA && videoProcessor != null
                 val isNaviVideo = parsed.type == MessageType.NAVI_VIDEO_DATA && NaviVideoSingleton.enabled
                 if ((isMainVideo || isNaviVideo) && parsed.length > 0) {
@@ -199,7 +205,7 @@ class BridgeUsbTransport private constructor(
                         reportStreamEnd(callback)
                         break
                     }
-                    val sourcePts = if (parsed.length >= 16) UsbDeviceWrapper.extractPtsFromHeader(videoBuffer) else 0
+                    val sourcePts = if (parsed.length >= 16) le32(videoBuffer, VIDEO_PTS_OFFSET) else 0
                     try {
                         if (isMainVideo) {
                             videoProcessor?.processVideoDirect(videoBuffer, parsed.length, sourcePts)
@@ -338,14 +344,21 @@ class BridgeUsbTransport private constructor(
         private const val POLL_SLICE_MS = 250
         private const val MAX_PAYLOAD_SIZE = BridgeContract.MAX_PAYLOAD_SIZE
 
-        // Same thresholds as UsbDeviceWrapper (see the rationale there).
+        // No data at all this long after the loop starts: the adapter can't write (dead IN
+        // endpoint). Headroom over the adapter's ~10s heartbeat window
+        // (documents/reference/heartbeat_analysis.md).
         private const val INITIAL_RESPONSE_TIMEOUT_MS = 15_000L
+
+        // Silence after data was flowing, by wall clock. Generous on purpose: the adapter goes
+        // quiet between scan messages while re-pairing the phone, and tearing down a live
+        // adapter makes it re-enumerate and aborts the re-pair.
         private const val MID_SESSION_SILENCE_MS = 60_000L
 
-        /**
-         * Try to open [deviceName] through the bridge. Never shows UI; the caller decides
-         * whether to fall back to [UsbDeviceWrapper].
-         */
+        // Source PTS: little-endian Int at byte 28 of the full frame = payload offset 12
+        // (documents/reference/.../video_protocol.md).
+        private const val VIDEO_PTS_OFFSET = 12
+
+        /** Try to open [deviceName] through the bridge. Never shows UI. */
         suspend fun open(
             context: Context,
             deviceName: String,

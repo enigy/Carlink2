@@ -152,7 +152,7 @@ object MessageParser {
 
             MessageType.DEBUG_TRACE -> parseHexPayload(header, payload, "DebugTrace")
 
-            // Navigation video — handled via direct video path in UsbDeviceWrapper,
+            // Navigation video — handled via direct video path in BridgeUsbTransport,
             // but if it arrives here (no videoProcessor), parse as info
             MessageType.NAVI_VIDEO_DATA -> InfoMessage(header, "NaviVideoData", "${header.length}B")
 
@@ -165,8 +165,8 @@ object MessageParser {
      *
      * WHY: ByteBuffer.wrap(array, offset, length) throws IOOBE when
      * offset+length > array.size. Without this helper, a short/corrupt frame
-     * would throw out of the USB-ReadLoop thread and require a full reconnect to
-     * recover (UsbDeviceWrapper already caps header.length at MAX_PAYLOAD_SIZE,
+     * would throw out of the transport read-loop thread and require a full reconnect to
+     * recover (the transport already caps header.length at MAX_PAYLOAD_SIZE,
      * so the window was narrow — but the failure mode was fatal when it hit).
      * The clamp converts any would-be crash into a logged drop; the state
      * machine's existing reconnect logic then handles recovery if needed.

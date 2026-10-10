@@ -22,7 +22,7 @@ object MessageSerializer {
      * streaming. When false, the field is omitted and the adapter never emits
      * 0x2C — production APKs and real-device debug APKs are bit-identical to
      * pre-feature behavior. See [com.carlink.ipc.NaviVideoSingleton.enabled] —
-     * the same boolean is mirrored there for the UsbDeviceWrapper demux split.
+     * the same boolean is mirrored there for the BridgeUsbTransport demux split.
      */
     @Volatile
     var includeNaviScreenInfo: Boolean = false

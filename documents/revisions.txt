@@ -1458,3 +1458,21 @@
    - Log: "[CLUSTER_MAIN] Arrived (cpType=…, Nm left) — starting 10s arrival timeout".
    - UNTESTED: not compiled in the authoring environment (no Android SDK); not run on hardware.
    - Affected: cluster/ClusterMainSession.kt, app/build.gradle.kts.
+
+[208] :: AutoResetUSB back to 1 — let the adapter re-plug itself after boot so the bridge gets a silent grant.
+   - ericyanush reports his split (feat/app-split-permissions) never prompts on any boot. Reviewed it: same
+     mechanism as ours (sideloaded android.car.usb.handler, no activity, fixed-handler grant), nothing at boot or
+     shutdown, no other permission path. The one relevant difference: his app never sends AutoResetUSB, so his
+     adapter is at the firmware default 1 (power-cycle USB with no host session → re-enumerates on its own).
+     Ours sends 0 since [162] (added when every re-enumeration meant a new prompt for the single app); the adapter
+     persists it. Our cold-start log: adapter sat on /001/009 perm=false for 4 min, never re-enumerating.
+   - MessageSerializer BoxSettings: AutoResetUSB 0 → 1 (explicit, to overwrite the stored 0).
+   - BRIDGE_PERMISSION_GRACE_MS 5 s → 25 s: the bridge's one-time prompt ([205]) now lands ~30 s after the first
+     miss, giving the adapter's own reset the first chance; its attach reconnects at once (onUsbDeviceAttached).
+   - Trade-off: the adapter may also power-cycle USB after a mid-drive drop, adding a few seconds to reconnect;
+     with the bridge those re-enumerations no longer prompt.
+   - Inference, not verified on the truck. Test: first session after updating stores the setting; on the next
+     cold start the adapter should reappear as a new /dev/bus/usb device with perm=true and no "prompt shown".
+   - UNTESTED: not compiled in the authoring environment (no Android SDK); not run on hardware.
+   - Affected: protocol/MessageSerializer.kt, CarlinkManager.kt, documents/reference/carlink2_bridge.md,
+     app/build.gradle.kts.

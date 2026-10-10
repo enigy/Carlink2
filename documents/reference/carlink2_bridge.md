@@ -103,9 +103,10 @@ dialog and the boot-time permission probe are gone.
 
 1. Bridge installed and holds permission for the attached `/dev/bus/usb/...` instance →
    open through the bridge. No dialog.
-2. Bridge lacks permission → keep retrying for `BRIDGE_PERMISSION_GRACE_MS` (5 s; with
-   reconnect backoff that is about 6 s after the first miss). A re-enumeration in that window
-   brings a fresh grant. After it, the **bridge** shows the system USB permission prompt
+2. Bridge lacks permission → keep retrying for `BRIDGE_PERMISSION_GRACE_MS` (25 s; with
+   reconnect backoff that is about 30 s after the first miss). A re-enumeration in that window
+   — such as the adapter's own USB reset, see the known issue — brings a fresh grant and an
+   immediate reconnect. After it, the **bridge** shows the system USB permission prompt
    ([205]) and the status reads "Approve the USB access prompt". The display app checks for
    the answer every second (`PROMPT_POLL_MS`, up to 2 min). Allow → connects. Deny → "Unplug
    and replug the adapter", and the bridge won't ask again for that device instance: a
@@ -135,8 +136,17 @@ sideloaded app can't use.
 streamed for 20 minutes without a drop. Also the likely cause of lvalen91's "worked, then
 stopped" report on PR #15.
 
-Handled by the bridge's one-time prompt (step 2 above): one tap after a cold start. A
-dialog-free fix would need the privileged APIs above.
+**[208] — letting the adapter re-plug itself.** The adapter's `AutoResetUSB` setting
+(firmware default 1) power-cycles its USB when it has no host session, so it re-enumerates
+on its own. Any re-enumeration after the driver's profile is up gives the bridge the grant
+silently. The fork had set it to 0 in [162], when every re-enumeration meant a new prompt
+for the single app; the 4-minute stall above happened with 0. ericyanush's split never sends
+the key (adapter at default 1) and reports no prompts on any boot. [208] sends
+`AutoResetUSB=1` explicitly — the adapter persists the value, so an adapter that stored 0
+must be set back — and waits ~30 s before the bridge's one-time prompt (step 2 above), which
+stays as the backstop. Unverified on our truck: the first session after updating stores the
+setting; the next cold start is the test (the adapter should come back as a new
+`/dev/bus/usb` device soon after boot with `perm=true`, and no `prompt shown` event).
 
 ## Diagnostics without adb
 

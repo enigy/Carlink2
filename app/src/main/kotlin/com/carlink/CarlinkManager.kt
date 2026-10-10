@@ -154,10 +154,11 @@ class CarlinkManager(
         private const val PAIR_TIMEOUT_MS = 15000L
 
         // How long the bridge may lack permission for the current adapter instance before it
-        // shows the system USB permission prompt ([205]). A grant racing a fresh attach lands
-        // well inside this. Reconnect backoff (2s, 4s…) puts the prompt on the attempt ~6s
-        // after the first miss.
-        private const val BRIDGE_PERMISSION_GRACE_MS = 5_000L
+        // shows the system USB permission prompt ([205]). [208]: long enough for the adapter's
+        // own USB reset (AutoResetUSB=1) to re-attach it and hand the bridge a silent grant
+        // first — that attach reconnects at once via onUsbDeviceAttached. Reconnect backoff
+        // (2s, 4s, 8s, 16s) puts the prompt on the attempt ~30s after the first miss.
+        private const val BRIDGE_PERMISSION_GRACE_MS = 25_000L
 
         // While the bridge's prompt is on screen, check for the user's answer this often (no
         // backoff), for at most PROMPT_WAIT_MS; after that the normal holding pattern still

@@ -1421,3 +1421,26 @@
    - Affected: bridge-api ICarlinkBridge.aidl + BridgeContract.kt, bridge PermissionPrompt.kt (new) +
      BridgeService.kt + build.gradle.kts, app CarlinkManager.kt + usb/BridgeUsbTransport.kt + build.gradle.kts,
      documents/reference/carlink2_bridge.md.
+
+[206] :: Disconnect handled once, off the main thread; one quick session restart when the phone isn't found.
+   - On-truck v205 (2026-10-09). Warm start and cold-boot prompt worked. Two stalls:
+     - 20:57–20:58: the adapter's first Bluetooth search found neither paired iPhone (DEVICE_NOT_FOUND),
+       WIFI_PAIR at 15 s, WIFI_CONNECTED, then silence until the 60 s watchdog restarted the session at 20:58:38;
+       the new session found the phone in 2 s. USB/bridge fine throughout (perm=true, same /001/027).
+     - 21:05:24: the adapter dropped off USB mid-drive (back 54 s later as /001/034). The detach broadcast (main
+       thread) and the read loop's stream-end (read thread) both ran handleError 22 ms apart; neither thread logged
+       again for 46 s (frozen video). Exact blocking call not identified from the log.
+   - handleError now claims the session once (sessionLive CAS, set in start() when the transport opens, cleared by
+     stop()); later reports for the same session are logged and dropped. The teardown runs on Dispatchers.IO
+     (tearDownAfterError), never on the main or read thread, and logs per-step timing:
+     [TEARDOWN] Nms (prep= driver= transport= audio=).
+   - BridgeUsbTransport.stopReadingLoop no longer joins its own thread (cost a flat 1 s after every read-loop error,
+     e.g. 20:58:38.237 → 20:58:39.237).
+   - Phone search: DEVICE_NOT_FOUND before any phone has connected (hadPriorSession=false) arms a 20 s timer;
+     BT_CONNECTED / DEVICE_FOUND / WIFI_CONNECTED push it out; PLUGGED cancels. On expiry the session restarts once
+     ("Phone not found — retrying…") through the same path as the silence watchdog. Once per stop() (fresh start
+     or Reset Device), so an absent phone doesn't churn the adapter; after that the 60 s watchdog applies as before.
+     Logs [PHONE_SEARCH] Armed / Re-armed / No phone … restarting.
+   - Bridge unchanged (v3).
+   - UNTESTED: not compiled in the authoring environment (no Android SDK); not run on hardware.
+   - Affected: CarlinkManager.kt, usb/BridgeUsbTransport.kt, app/build.gradle.kts.

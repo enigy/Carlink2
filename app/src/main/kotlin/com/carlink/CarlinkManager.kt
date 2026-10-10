@@ -72,6 +72,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.util.Timer
 import java.util.TimerTask
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -163,6 +164,12 @@ class CarlinkManager(
         // catches a late Allow.
         private const val PROMPT_POLL_MS = 1_000L
         private const val PROMPT_WAIT_MS = 120_000L
+
+        // [206] Before the first phone connects, after the adapter reports DEVICE_NOT_FOUND:
+        // restart the adapter session once if no phone has connected this long after the last
+        // sign of progress. Truck log 2026-10-09 20:57: the first search failed and the adapter
+        // sat silent until the 60s watchdog; the restarted session found the phone in 2s.
+        private const val PHONE_SEARCH_RETRY_MS = 20_000L
 
         private const val PROMPT_STATUS = "Approve the USB access prompt"
         private const val REPLUG_STATUS = "Unplug and replug the adapter"
@@ -377,6 +384,17 @@ class CarlinkManager(
 
     // The open transport — always the bridge ([204]).
     private var usbTransport: UsbTransport? = null
+
+    // True from the moment start() opens a USB session until the first handleError (or stop())
+    // for it ([206]). The detach broadcast and the read loop's stream-end usually report the same
+    // disconnect within milliseconds; only the first may tear the session down.
+    private val sessionLive = AtomicBoolean(false)
+
+    // [206] The one quick session restart for a phone the adapter couldn't find — see
+    // PHONE_SEARCH_RETRY_MS. Reset by stop() (fresh start / Reset Device).
+    @Volatile private var phoneSearchJob: Job? = null
+
+    @Volatile private var quickPhoneRetryUsed = false
 
     // elapsedRealtime of the first bridge attempt that found the bridge without permission for
     // the attached adapter; 0 = not currently in that state. See BRIDGE_PERMISSION_GRACE_MS.
@@ -1026,6 +1044,7 @@ class CarlinkManager(
 
         val transport = openTransport(device) ?: return
         usbTransport = transport
+        sessionLive.set(true)
 
         // Clear any stale adapter session left by a prior force-kill or crash.
         // The adapter firmware retains session state across USB reconnects. If the previous
@@ -1249,6 +1268,9 @@ class CarlinkManager(
      */
     fun stop(reboot: Boolean = false) {
         logDebug("[LIFECYCLE] stop() called - clearing keyframe schedule and phoneType", tag = Logger.Tags.VIDEO)
+        sessionLive.set(false) // a late error from this session must not tear down or reconnect
+        cancelPhoneSearchRetry()
+        quickPhoneRetryUsed = false // fresh start / Reset Device earns a new quick retry
         clearPairTimeout()
         cancelUnplugGrace() // Tearing down — drop any pending post-unplug re-initiate
         cancelWakeConnect() // and any pending wake-settle connect
@@ -1478,6 +1500,55 @@ class CarlinkManager(
     private fun cancelUnplugGrace() {
         unplugGraceJob?.cancel()
         unplugGraceJob = null
+    }
+
+    /**
+     * [206] The adapter reported it couldn't find the phone before any phone connected: restart
+     * the adapter session once if none connects within [PHONE_SEARCH_RETRY_MS]. Later signs of
+     * progress push the deadline out ([extendPhoneSearchRetry]); PLUGGED cancels it.
+     *
+     * Once only until [stop]: for a phone that really isn't there, repeated re-scans are what
+     * wedge the adapter into a watchdog reboot (see [onPhoneUnpluggedGently]), so after one
+     * retry the 60 s silence watchdog applies as before. Never once a phone has connected in
+     * this session ([hadPriorSession]): then the gentle unplug handling keeps the session open
+     * for the adapter's own re-pair.
+     */
+    private fun armPhoneSearchRetry(trigger: String) {
+        if (quickPhoneRetryUsed || hadPriorSession) return
+        if (state == State.DEVICE_CONNECTED || state == State.STREAMING) return
+        val rearm = phoneSearchJob?.isActive == true
+        phoneSearchJob?.cancel()
+        phoneSearchJob =
+            scope.launch {
+                delay(PHONE_SEARCH_RETRY_MS)
+                if (quickPhoneRetryUsed || hadPriorSession) return@launch
+                if (state == State.DEVICE_CONNECTED || state == State.STREAMING) return@launch
+                quickPhoneRetryUsed = true
+                logWarn(
+                    "[PHONE_SEARCH] No phone ${PHONE_SEARCH_RETRY_MS / 1000}s after $trigger — " +
+                        "restarting the adapter session (once)",
+                    tag = Logger.Tags.ADAPTR,
+                )
+                setStatusText("Phone not found — retrying…")
+                // "USB" in the message routes it through isUsbDisconnectError → scheduleReconnect,
+                // the same path as the silence watchdog that recovered the 2026-10-09 case.
+                handleError("Phone not found — restarting the USB session")
+            }
+        logInfo(
+            "[PHONE_SEARCH] ${if (rearm) "Re-armed" else "Armed"} on $trigger: restarting the session in " +
+                "${PHONE_SEARCH_RETRY_MS / 1000}s unless a phone connects",
+            tag = Logger.Tags.ADAPTR,
+        )
+    }
+
+    /** Push an armed phone-search deadline out after a sign of progress. */
+    private fun extendPhoneSearchRetry(trigger: String) {
+        if (phoneSearchJob?.isActive == true) armPhoneSearchRetry(trigger)
+    }
+
+    private fun cancelPhoneSearchRetry() {
+        phoneSearchJob?.cancel()
+        phoneSearchJob = null
     }
 
     /**
@@ -2120,6 +2191,7 @@ class CarlinkManager(
                 }
                 clearPairTimeout()
                 cancelUnplugGrace() // Phone returned — cancel any pending post-unplug re-initiate
+                cancelPhoneSearchRetry() // Phone found — no quick session restart needed
                 cancelDelayedKeyframe() // Stop any existing timer (clean slate)
 
                 // Reset reconnect attempts and escalation on successful connection
@@ -2341,7 +2413,14 @@ class CarlinkManager(
                     message.command == CommandMapping.DEVICE_FOUND
                 ) {
                     setStatusText("Phone found — connecting...")
+                    extendPhoneSearchRetry(message.command.name)
                     logDebug("[CMD] ${message.command.name}", tag = Logger.Tags.ADAPTR)
+                } else if (message.command == CommandMapping.DEVICE_NOT_FOUND) {
+                    armPhoneSearchRetry(message.command.name)
+                    logDebug("[CMD] ${message.command.name} (id=${message.rawId})", tag = Logger.Tags.ADAPTR)
+                } else if (message.command == CommandMapping.WIFI_CONNECTED) {
+                    extendPhoneSearchRetry(message.command.name)
+                    logDebug("[CMD] ${message.command.name} (id=${message.rawId})", tag = Logger.Tags.ADAPTR)
                 } else if (message.command == CommandMapping.REQUEST_NAVI_SCREEN_FOCUS) {
                     // Step 3 of the three-step 508 handshake: adapter sent 508 back in reply to
                     // our proactive step-1 send (CommandMessage handler in PluggedMessage at ~L1805).
@@ -3212,16 +3291,34 @@ class CarlinkManager(
      * very coroutine that invoked start().
      *
      * For USB disconnects, schedules auto-reconnect with exponential backoff.
+     *
+     * [206]: one teardown per session, never on the caller's thread. Callers are the detach
+     * broadcast (main thread), the USB read loop and the heartbeat/send path. Truck log
+     * 2026-10-09 21:05:24: the detach broadcast and the read loop's stream-end arrived 22 ms
+     * apart, both tore the same session down at once, and neither the main thread nor the read
+     * thread logged again for 46 s — frozen video, no reconnect. Now the first report claims the
+     * session ([sessionLive]); later ones are logged and dropped, and the teardown runs on
+     * Dispatchers.IO ([tearDownAfterError]).
      */
     private fun handleError(error: String) {
+        if (!sessionLive.compareAndSet(true, false)) {
+            logInfo("[ERROR] \"$error\" — session already torn down, ignoring", tag = Logger.Tags.ADAPTR)
+            return
+        }
+        logError("Adapter error: $error", tag = Logger.Tags.ADAPTR)
+        scope.launch(Dispatchers.IO) { tearDownAfterError(error) }
+    }
+
+    private fun tearDownAfterError(error: String) {
+        val startedMs = android.os.SystemClock.elapsedRealtime()
+
         // NOTE: `hadPriorSession` is intentionally NOT reset here (it's only reset in
         // stop()). This preserves escalation context across mid-session failures so that
         // Pattern A/B/C status messages can correctly distinguish "adapter broken after a
         // prior session" from "never connected".
         clearPairTimeout()
         cancelUnplugGrace() // Error supersedes the gentle post-unplug wait
-
-        logError("Adapter error: $error", tag = Logger.Tags.ADAPTR)
+        cancelPhoneSearchRetry()
 
         // Full session state reset (mirrors stop() minus cancelReconnect/graceful teardown)
         cancelDelayedKeyframe()
@@ -3243,18 +3340,31 @@ class CarlinkManager(
         stopMicrophoneCapture()
         restoreNormalAudioMode() // never leave the platform stuck in MODE_IN_COMMUNICATION
         gnssForwarder?.stop()
+        val audioModeDoneMs = android.os.SystemClock.elapsedRealtime()
 
         // Stop adapter driver (heartbeat, reading loop) and close USB.
         // Skip graceful teardown — USB is likely dead.
         adapterDriver?.stop()
         adapterDriver = null
+        val driverDoneMs = android.os.SystemClock.elapsedRealtime()
         usbTransport?.close()
         usbTransport = null
+        val transportDoneMs = android.os.SystemClock.elapsedRealtime()
 
         if (audioInitialized) {
             audioManager?.release()
             audioInitialized = false
         }
+        val audioDoneMs = android.os.SystemClock.elapsedRealtime()
+
+        // Per-step timing, so a slow teardown (the 46 s one above) names its culprit next time.
+        // prep = state reset + mic, audio mode and GNSS stop.
+        logInfo(
+            "[TEARDOWN] ${audioDoneMs - startedMs}ms (prep=${audioModeDoneMs - startedMs} " +
+                "driver=${driverDoneMs - audioModeDoneMs} transport=${transportDoneMs - driverDoneMs} " +
+                "audio=${audioDoneMs - transportDoneMs})",
+            tag = Logger.Tags.USB,
+        )
 
         // Pattern A: track consecutive "no initial response" errors (adapter USB write dead)
         // Pattern C: track short-lived STREAMING sessions (unstable adapter)

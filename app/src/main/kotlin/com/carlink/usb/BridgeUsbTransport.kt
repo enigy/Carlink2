@@ -109,11 +109,16 @@ class BridgeUsbTransport private constructor(
 
     override fun stopReadingLoop() {
         if (!readingLoopActive.getAndSet(false)) return
-        try {
-            // The loop polls in POLL_SLICE_MS steps, so it notices the flag promptly.
-            readLoopThread?.join(1000)
-        } catch (_: InterruptedException) {
-            Thread.currentThread().interrupt()
+        val thread = readLoopThread
+        // From the read thread itself (its error callback), a join would only wait out the full
+        // timeout — the 1 s gap after every "adapter silent" error in the 2026-10-09 log ([206]).
+        if (thread != null && thread !== Thread.currentThread()) {
+            try {
+                // The loop polls in POLL_SLICE_MS steps, so it notices the flag promptly.
+                thread.join(1000)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
         }
         readLoopThread = null
     }

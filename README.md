@@ -22,7 +22,6 @@ missing or hasn't been granted the adapter. Details, install order and diagnosti
 ---
 
 Carlink is a **native** Kotlin code implementation from the original [Flutter-based](https://github.com/lvalen91/Carlink) app.
-I did this app for me and my use, but sharing so others can use it. Don't expect or demand support but I'll help where i can.
 
 ### Requirments
 
@@ -100,7 +99,7 @@ Audio:
 
 
 > [!IMPORTANT]
-> My Primary smartphone is an iPhone and therefor Carplay as gotten the most tuning and testing. A Google Pixel 10 is used for testing basic functionality, cannot do real-world 'Day to Day' testing.
+> My Primary smartphone is an iPhone and therefor Carplay as gotten the most tuning and testing.
 
 ## Screen Shots from Android Emulator with USB-PassThrough for CPC200-CCPA Use
 
@@ -151,6 +150,7 @@ Most of your questions are likly answered in [Carlink Documents](/documents/refe
 # Other Repos that started this gravy train, provided insights/inspiration. And Helped a lot.
 # Check them out
 
+- [Carplay by Ivalen91](https://github.com/lvalen91/carlink) - Carplay(_native) Kotlin port, source of this fork.
 - [Carplay by Abuharsky](https://github.com/abuharsky/carplay) - Original Android implementation
 - [Node-Carplay by Rhysmorgan134](https://github.com/rhysmorgan134/node-CarPlay) - Protocol reverse engineering
 - [LIVI by f-io](https://github.com/f-io/LIVI) - Linux (Raspberry Pi) and macOS implementation

@@ -17,9 +17,6 @@ missing or hasn't been granted the adapter. Details, install order and diagnosti
 
 To install the bridge app, you will either need to use ADB (difficult) or clone and deploy the AAOS File Launcher app.  See https://github.com/muzso/fileslauncher for the process.
 
-```
-./gradlew :app:bundleRelease :bridge:assembleRelease
-```
 
 ---
 

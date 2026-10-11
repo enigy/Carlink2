@@ -15,6 +15,8 @@ HUD maneuver icons render. The display app falls back to its own USB dialog when
 missing or hasn't been granted the adapter. Details, install order and diagnostics:
 [documents/reference/carlink2_bridge.md](documents/reference/carlink2_bridge.md).
 
+To install the bridge app, you will either need to use ADB (difficult) or clone and deploy the AAOS File Launcher app.  See https://github.com/muzso/fileslauncher for the process.
+
 ```
 ./gradlew :app:bundleRelease :bridge:assembleRelease
 ```

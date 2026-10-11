@@ -54,7 +54,7 @@ I did this app for me and my use, but sharing so others can use it. Don't expect
 > 2. Steering Wheel Voice/Call Control doesn't work. That is a system-level app featuer and this is not that. If you want Steering Wheel Voice Controls, then ignore #1 and set the in-app adapter audio routing to Bluetooth. THe Phone and Vehicle will stay connected for ALL audio related events.
 
 > [!IMPORTANT]
->My 2024 Silverado gminfo3.7 Intel AAOS radio is the target Platform and my only hardware for testing. 
+>My 2025 GMC Sierra w/HUD gminfo3.7 Intel AAOS radio is the target Platform and my only hardware for testing. 
 
 > [!WARNING]
 > *Compatability on anything else is not verified* and should be treated as **untested**. Optimized for Video and Audio performance on the gminfo3.7. That is **my only focus** you can fork this repo and optimize it for your own needs.

@@ -147,8 +147,7 @@ I, or mostly CLAUDE, have tried to collect and organize as much documentation as
 
 Most of your questions are likly answered in [Carlink Documents](/documents/reference/), but reach out on the XDA Forum. Issues use github to report it or the forum as well.
 
-# Other Repos that started this gravy train, provided insights/inspiration. And Helped a lot.
-# Check them out
+# Repos that provided stepping stones and foundations for this app:
 
 - [Carplay by Ivalen91](https://github.com/lvalen91/carlink) - Carplay(_native) Kotlin port, source of this fork.
 - [Carplay by Abuharsky](https://github.com/abuharsky/carplay) - Original Android implementation

@@ -44,7 +44,7 @@ Carlink is a **native** Kotlin code implementation from the original [Flutter-ba
 > On STOCK adapter firmware, the firmware strips away the rich nav details iPhones provide and narrows it down to basic manuvers. The custom adapter firmware (see below) restores full iAP2 route information, so CarPlay now gets complete maneuver/route data. CarPlay itself does not send ready-made navigation icons, so the app generates them on-device from the recovered iAP2 geometry (including correct roundabouts drawn from the real junction arms). Android Auto does provide manuver images, which are forwarded to the cluster. They are more detailed and accurate.
 >
 > Vehicles running the GM VCU radio (Bosch VCUNH1 — most EVs and newer Fuel/ICE vehicles) on GM AAOS 14+ do not use any icon provided by the app. GM VMSPlugin still passes them, but the Cluster ECU ignores it and renders from its own internal icon set based on the manuver type (VMSPlugin's setManeuverType() enum forces the GM glyph). Earlier VCU vehicles on AAOS 12 or 13 may have behaved differently before being upgraded.
->
+
 > [!TIP]
 Before complaining about Audio issues.
 > 1. Disconnect and forget the Phone and Vehicle from each others Bluetooth. The adapter defaults to audio routing THROUGH the adapter for both microhone input and audio output. Make sure you allowed microphone access to the app.

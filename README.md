@@ -48,7 +48,7 @@ Carlink is a **native** Kotlin code implementation from the original [Flutter-ba
 > [!TIP]
 Before complaining about Audio issues.
 > 1. Disconnect and forget the Phone and Vehicle from each others Bluetooth. The adapter defaults to audio routing THROUGH the adapter for both microhone input and audio output. Make sure you allowed microphone access to the app.
-> 2. Steering Wheel Voice/Call Control doesn't work. That is a system-level app featuer and this is not that. If you want Steering Wheel Voice Controls, then ignore #1 and set the in-app adapter audio routing to Bluetooth. THe Phone and Vehicle will stay connected for ALL audio related events.
+> 2. Steering Wheel Voice/Call Control doesn't work. That is a system-level app feature and this is not that. If you want Steering Wheel Voice Controls, then ignore #1 and set the in-app adapter audio routing to Bluetooth. THe Phone and Vehicle will stay connected for ALL audio related events.
 
 > [!IMPORTANT]
 >My 2025 GMC Sierra w/HUD gminfo3.7 Intel AAOS radio is the target Platform and my only hardware for testing. 

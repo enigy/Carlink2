@@ -427,9 +427,9 @@ fun MainScreen(
                     onClick = {
                         if (!isResetting) {
                             isResetting = true
-                            // Prefer the Activity-level manager-rebuild path when wired
-                            // (it recreates the SurfaceView against fresh WindowMetrics and
-                            // renegotiates Open() with current dims — deterministic repair).
+                            // Prefer the Activity-level reset when wired: it reboots the adapter
+                            // ([209]), recreates the SurfaceView against fresh WindowMetrics and
+                            // renegotiates Open() with current dims — deterministic repair.
                             // Fall back to in-manager restart() for callers that don't plumb
                             // the callback (e.g. tests/previews).
                             val reset = onResetConnection

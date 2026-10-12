@@ -354,11 +354,11 @@ class MainActivity : ComponentActivity() {
                             displayMode = displayMode,
                             onResetCluster = ::restartClusterBinding,
                             onReinitForDisplayMode = ::reinitializeForDisplayMode,
-                            // Reset Connection now rebuilds the full manager via the same
-                            // path display-mode changes use. Turns a probabilistic repair
-                            // into a deterministic one: new SurfaceView, fresh HWC plane,
-                            // fresh WindowMetrics, renegotiated Open() — every time.
-                            onResetConnection = { reinitializeForDisplayMode(currentDisplayMode) },
+                            // Reset Device reboots the adapter ([209]), then rebuilds the full
+                            // manager via the same path display-mode changes use. Turns a
+                            // probabilistic repair into a deterministic one: new SurfaceView,
+                            // fresh HWC plane, fresh WindowMetrics, renegotiated Open() — every time.
+                            onResetConnection = ::resetDevice,
                             onPhoneConnected = ::onPhoneConnectedRefreshCluster,
                         )
                     }
@@ -757,6 +757,23 @@ class MainActivity : ComponentActivity() {
             }
             mediaSessionManager = null
         }
+    }
+
+    /**
+     * Reset Device, the button on the connecting screen. [209]: reboots the adapter first. The
+     * rebuild alone only reset this app's side, which can't clear an adapter whose Wi-Fi is stuck
+     * (truck log 2026-10-12: neither of two presses helped; the adapter's Wi-Fi freed up on its
+     * own). A reboot re-attaches the adapter while the driver's profile is up, so the bridge gets
+     * its USB grant without a prompt, and the rebuilt manager waits for that re-attach. No reboot
+     * if no session is open to send it over, or if the adapter was rebooted in the last 2 minutes.
+     */
+    private fun resetDevice() {
+        val rebooted = carlinkManager?.rebootForReset() ?: false
+        logWarn(
+            "[UI_ACTION] Reset Device — ${if (rebooted) "adapter rebooting, " else ""}rebuilding the connection",
+            tag = "MAIN",
+        )
+        reinitializeForDisplayMode(currentDisplayMode)
     }
 
     /**

@@ -1252,7 +1252,7 @@ See `initialization.md` and `configuration.md` for detailed timing requirements.
 | 7 | Connecting / Negotiating | VERIFIED | `@ 4.498s: Phase payload 07 00 00 00` |
 | 8 | Streaming Ready / Active | VERIFIED | `@ 7.504s: Phase payload 08 00 00 00` |
 | 11 | CarLife Download | AutoKit app | CarLife app download prompt (Baidu CarLife protocol) |
-| 13 | Session Negotiation Failed | VERIFIED | AirPlay negotiation rejected — typically viewArea/safeArea constraint violation (`safeArea ⊆ viewArea ⊆ display`). Adapter internally sees Phase 0 (disconnect) between Phase 2 and 103. Triggers Phase 7→13 reconnect loop. Observed Feb 2026 when HU_VIEWAREA_INFO dimensions exceeded OPEN resolution. |
+| 13 | Session Negotiation Failed | VERIFIED | AirPlay negotiation rejected — typically viewArea/safeArea constraint violation (`safeArea ⊆ viewArea ⊆ display`). Adapter internally sees Phase 0 (disconnect) between Phase 2 and 103. Triggers Phase 7→13 reconnect loop. Observed Feb 2026 when HU_VIEWAREA_INFO dimensions exceeded OPEN resolution. Also sent with **no Phase 7** when the phone never starts its session: 31.7 s after Plugged, every time (truck log 2026-10-12, wireless CarPlay, while a second iPhone most likely still held the adapter's Wi-Fi). |
 | 1001 | Hardware Error: Bluetooth | AutoKit app | Adapter Bluetooth subsystem failure (RTL HCI init or hfpd crash) |
 | 1002 | Hardware Error: WiFi | AutoKit app | Adapter WiFi subsystem failure (RTL8822CS driver load or hostapd crash) |
 | 1003 | Hardware Error: Unknown | AutoKit app | Adapter hardware error (unclassified) |

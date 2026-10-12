@@ -96,6 +96,9 @@ import java.util.concurrent.atomic.AtomicReference
  * - Auto-reconnect with exponential backoff and Pattern A / Pattern B / Pattern C status
  *   escalation (defined inline near the SHORT_SESSION_* constants; see [scheduleReconnect]
  *   and [handleError]).
+ * - Adapter reboots ([209]): automatic when a wireless CarPlay phone never starts its session
+ *   ([onCarPlayStartStuck]), and on Reset Device ([rebootForReset]). The app then waits for the
+ *   adapter to re-attach instead of retrying ([rebootAdapter], [onUsbDeviceAttached]).
  * - Device-management surface: DevList merging from BoxSettings, [forgetDevice],
  *   [connectToDevice] (targeted AutoConnect_By_BtAddress), [refreshDeviceList].
  * - Cluster-navigation gating: NAVI_JSON / NAVI_IMAGE are dropped unless
@@ -174,6 +177,36 @@ class CarlinkManager(
 
         private const val PROMPT_STATUS = "Approve the USB access prompt"
         private const val REPLUG_STATUS = "Unplug and replug the adapter"
+
+        // [209] A wireless CarPlay phone that reaches PLUGGED starts its session (Phase 7) within
+        // about a second — 0.2–1.0 s in every truck log so far. Truck log 2026-10-12 17:15: with
+        // a second iPhone still on the adapter's Wi-Fi, Phase 7 never came and the adapter gave
+        // up 31.7 s after PLUGGED with Phase 13, three times, until that phone left. After this
+        // long without Phase 7, reboot the adapter, which clears its Wi-Fi.
+        private const val CARPLAY_START_TIMEOUT_MS = 10_000L
+
+        // [209] At most one automatic reboot in this window. After it, the adapter's own retries
+        // and Reset Device take over, so a phone that can't connect can't loop reboots.
+        private const val AUTO_REBOOT_COOLDOWN_MS = 10 * 60_000L
+
+        // [209] How long a rebooting adapter may take to re-attach before we retry anyway. The
+        // 2026-10-09 21:05 reboot re-attached after 54 s.
+        private const val ADAPTER_REBOOT_WAIT_MS = 90_000L
+
+        // [209] Reset Device sends no second reboot this soon after one, only reconnects, so an
+        // impatient second press doesn't restart the minute-long wait.
+        private const val RESET_REBOOT_GUARD_MS = 2 * 60_000L
+
+        private const val REBOOT_STATUS = "Restarting the adapter — about a minute…"
+
+        // [209] elapsedRealtime of the last reboot command and of the last automatic one, and
+        // whether the rebooted adapter has re-attached yet. Process-wide: Reset Device rebuilds
+        // the manager while the adapter is still rebooting.
+        @Volatile private var lastRebootMs = 0L
+
+        @Volatile private var lastAutoRebootMs = 0L
+
+        @Volatile private var awaitingRebootAttach = false
 
         // Grace window after a spontaneous phone unplug before we re-initiate the
         // connection. Lets the adapter's autoConn re-pair a transiently-dropped phone
@@ -582,6 +615,13 @@ class CarlinkManager(
     // Phase 13 (negotiation_failed) — prevents auto-restart loop when iPhone rejects config
     private var negotiationRejected: Boolean = false
 
+    // [209] True from a wireless CarPlay PLUGGED until its session starts (Phase 7/8 or video).
+    // Tells a Phase 13 for a session that never started from one that rejected our settings.
+    // carPlayStartJob reboots the adapter if it's still true after CARPLAY_START_TIMEOUT_MS.
+    @Volatile private var awaitingCarPlayStart = false
+
+    @Volatile private var carPlayStartJob: Job? = null
+
     // Targeted connect: when set, the next restart() cycle sends AutoConnect_By_BtAddress
     // instead of the normal WIFI_CONNECT (1002) auto-connect scan.
     @Volatile private var pendingConnectTarget: String? = null
@@ -981,6 +1021,15 @@ class CarlinkManager(
             stop()
         }
 
+        // [209] Don't open an adapter that is rebooting: its re-attach starts the connection
+        // (onUsbDeviceAttached), and scheduleReconnect() holds a fallback retry.
+        if (rebootWaitLeftMs() > 0) {
+            logInfo("[REBOOT] Adapter restarting — waiting for it to re-attach", tag = Logger.Tags.USB)
+            setState(State.DISCONNECTED)
+            setStatusText(REBOOT_STATUS)
+            return
+        }
+
         setState(State.CONNECTING)
         setStatusText("Searching for adapter...")
         resetUnknownCounters()
@@ -1271,6 +1320,7 @@ class CarlinkManager(
         logDebug("[LIFECYCLE] stop() called - clearing keyframe schedule and phoneType", tag = Logger.Tags.VIDEO)
         sessionLive.set(false) // a late error from this session must not tear down or reconnect
         cancelPhoneSearchRetry()
+        cancelCarPlayStartCheck()
         quickPhoneRetryUsed = false // fresh start / Reset Device earns a new quick retry
         clearPairTimeout()
         cancelUnplugGrace() // Tearing down — drop any pending post-unplug re-initiate
@@ -1553,6 +1603,107 @@ class CarlinkManager(
     }
 
     /**
+     * [209] Reboot the adapter if a wireless CarPlay phone that reached PLUGGED hasn't started
+     * its session within [CARPLAY_START_TIMEOUT_MS]. Phase 7/8, video, UNPLUGGED, stop() and
+     * error teardown cancel it.
+     */
+    private fun armCarPlayStartCheck() {
+        awaitingCarPlayStart = true
+        carPlayStartJob?.cancel()
+        carPlayStartJob =
+            scope.launch {
+                delay(CARPLAY_START_TIMEOUT_MS)
+                // Detach the field first so the reboot's own cancelCarPlayStartCheck() can't
+                // cancel this coroutine mid-flight.
+                carPlayStartJob = null
+                if (awaitingCarPlayStart && state == State.DEVICE_CONNECTED) {
+                    onCarPlayStartStuck("no CarPlay session ${CARPLAY_START_TIMEOUT_MS / 1000}s after PLUGGED")
+                }
+            }
+    }
+
+    /** [209] The session started, or the attempt ended: nothing to check. */
+    private fun cancelCarPlayStartCheck() {
+        awaitingCarPlayStart = false
+        carPlayStartJob?.cancel()
+        carPlayStartJob = null
+    }
+
+    /**
+     * [209] The phone reached the adapter over Bluetooth but CarPlay never started. Truck log
+     * 2026-10-12: a second iPhone had CarPlay first, and after its session ended the driver's
+     * phone failed three times (Phase 13, 31.7 s after PLUGGED each time). The adapter reported
+     * its Wi-Fi empty (WIFI_DISCONNECTED) 4½ minutes after that session ended, most likely the
+     * other iPhone leaving it, and the next PLUGGED started CarPlay in 0.4 s. The app had treated
+     * each failure as a rejected configuration and waited for the 60 s silence watchdog, and two
+     * Reset Device presses didn't touch the adapter's Wi-Fi.
+     *
+     * A reboot does: once per [AUTO_REBOOT_COOLDOWN_MS]. After that, the UNPLUGGED that follows
+     * the adapter's Phase 13 goes through the normal unplug handling, which retries.
+     */
+    private fun onCarPlayStartStuck(reason: String) {
+        // Keep awaitingCarPlayStart: the adapter's Phase 13 that may still follow must not read
+        // as a rejected configuration. Its UNPLUGGED clears it.
+        carPlayStartJob?.cancel()
+        carPlayStartJob = null
+        if (suspendedForScreenOff || !isScreenInteractive()) {
+            logInfo("[CARPLAY_START] $reason — display off, not rebooting", tag = Logger.Tags.ADAPTR)
+            return
+        }
+        val now = SystemClock.elapsedRealtime()
+        val sinceAutoMs = now - lastAutoRebootMs
+        if (lastAutoRebootMs != 0L && sinceAutoMs < AUTO_REBOOT_COOLDOWN_MS) {
+            logWarn(
+                "[CARPLAY_START] $reason — adapter already rebooted ${sinceAutoMs / 1000}s ago; " +
+                    "leaving the retry to the adapter",
+                tag = Logger.Tags.ADAPTR,
+            )
+            setStatusText("CarPlay didn't start — retrying…")
+            return
+        }
+        lastAutoRebootMs = now
+        logWarn("[CARPLAY_START] $reason — rebooting the adapter to clear its Wi-Fi", tag = Logger.Tags.ADAPTR)
+        setStatusText("CarPlay didn't start — restarting the adapter…")
+        // Mark the reboot now, before the IO hop: the UNPLUGGED that follows a Phase 13 can be
+        // handled on the read thread before rebootAdapter() runs, and must be ignored.
+        markRebooting()
+        scope.launch(Dispatchers.IO) { rebootAdapter() }
+    }
+
+    private fun markRebooting() {
+        lastRebootMs = SystemClock.elapsedRealtime()
+        awaitingRebootAttach = true
+    }
+
+    /** [209] ms left to wait for a rebooting adapter to re-attach; 0 when none is pending. */
+    private fun rebootWaitLeftMs(): Long {
+        if (!awaitingRebootAttach) return 0L
+        val leftMs = ADAPTER_REBOOT_WAIT_MS - (SystemClock.elapsedRealtime() - lastRebootMs)
+        if (leftMs <= 0L) awaitingRebootAttach = false
+        return leftMs.coerceAtLeast(0L)
+    }
+
+    /**
+     * [209] Reset Device: reboot the adapter, unless the last reboot was under
+     * [RESET_REBOOT_GUARD_MS] ago — then the caller's reconnect is all that's needed. Needs an
+     * open session: an adapter that can't be reached can't be told to reboot. Returns true if
+     * the reboot was sent.
+     */
+    fun rebootForReset(): Boolean {
+        if (adapterDriver == null) return false
+        val sinceLastMs = SystemClock.elapsedRealtime() - lastRebootMs
+        if (lastRebootMs != 0L && sinceLastMs < RESET_REBOOT_GUARD_MS) {
+            logInfo(
+                "[REBOOT] Reset Device ${sinceLastMs / 1000}s after the last reboot — reconnecting only",
+                tag = Logger.Tags.ADAPTR,
+            )
+            return false
+        }
+        rebootAdapter()
+        return true
+    }
+
+    /**
      * Kick off the initial connection on the MANAGER's own [scope] (not the caller's).
      *
      * CRITICAL: the initial connect must NOT run inside a Compose `LaunchedEffect` keyed on
@@ -1677,10 +1828,24 @@ class CarlinkManager(
         // deliberately preserved here — reboot is user-initiated recovery, not a clean-slate
         // reset. If you want reboot to clear escalation state too, reset them here.
         logWarn("[LIFECYCLE] Reboot adapter requested", tag = Logger.Tags.ADAPTR)
+        // [209] Until the adapter re-attaches, its detach and anything still in flight from this
+        // session are expected: no error teardown, and no reconnect into the instance that's
+        // going away — start() and scheduleReconnect() wait (see rebootWaitLeftMs).
+        sessionLive.set(false)
+        markRebooting()
         cancelReconnect()
+        cancelUnplugGrace()
+        cancelPhoneSearchRetry()
+        cancelCarPlayStartCheck()
+        clearPairTimeout()
         stopMicrophoneCapture()
         restoreNormalAudioMode() // never leave the platform stuck in MODE_IN_COMMUNICATION
-        adapterDriver?.rebootAdapter()
+        if (adapterDriver?.rebootAdapter() != true) {
+            // No open session to send it over, or the write failed: don't wait for a re-attach
+            // that won't come.
+            awaitingRebootAttach = false
+            logWarn("[REBOOT] Reboot command not sent — reconnecting instead", tag = Logger.Tags.ADAPTR)
+        }
         adapterDriver?.stop()
         adapterDriver = null
         usbTransport?.close()
@@ -1701,6 +1866,8 @@ class CarlinkManager(
         isAlertAudioActive = false
         clearCachedMediaMetadata()
         setState(State.DISCONNECTED)
+        // Shows REBOOT_STATUS and arms the fallback retry in case the re-attach is missed.
+        scheduleReconnect()
     }
 
     /**
@@ -1781,6 +1948,13 @@ class CarlinkManager(
      * after this broadcast) have landed first.
      */
     fun onUsbDeviceAttached() {
+        if (awaitingRebootAttach) {
+            awaitingRebootAttach = false
+            logInfo(
+                "[REBOOT] Adapter back ${(SystemClock.elapsedRealtime() - lastRebootMs) / 1000}s after the reboot",
+                tag = Logger.Tags.USB,
+            )
+        }
         bridgeNoPermissionSinceMs = 0L // new device instance → fresh grace window
         bridgeBlockedStatus = null
         bridgePromptDevice = null
@@ -2194,6 +2368,13 @@ class CarlinkManager(
                 cancelUnplugGrace() // Phone returned — cancel any pending post-unplug re-initiate
                 cancelPhoneSearchRetry() // Phone found — no quick session restart needed
                 cancelDelayedKeyframe() // Stop any existing timer (clean slate)
+                if (message.wifi == 1 &&
+                    (message.phoneType == PhoneType.CARPLAY || message.phoneType == PhoneType.CARPLAY_WIRELESS)
+                ) {
+                    armCarPlayStartCheck() // [209]
+                } else {
+                    cancelCarPlayStartCheck()
+                }
 
                 // Reset reconnect attempts and escalation on successful connection
                 reconnectAttempts = 0
@@ -2311,7 +2492,12 @@ class CarlinkManager(
             }
 
             is UnpluggedMessage -> {
+                cancelCarPlayStartCheck()
                 when {
+                    rebootWaitLeftMs() > 0 -> {
+                        // [209] Follows the Phase 13 that triggered the reboot.
+                        logDebug("[PHASE] Unplugged while the adapter reboots — ignoring", tag = Logger.Tags.ADAPTR)
+                    }
                     negotiationRejected -> {
                         logDebug(
                             "[PHASE] Unplugged after negotiation rejection — not restarting",
@@ -2347,6 +2533,7 @@ class CarlinkManager(
             // No data to process here - just update state
             VideoStreamingSignal -> {
                 clearPairTimeout()
+                if (awaitingCarPlayStart) cancelCarPlayStartCheck() // [209] video = session started
 
                 if (state != State.STREAMING) {
                     logInfo("Video streaming started (direct processing)", tag = Logger.Tags.VIDEO)
@@ -2563,7 +2750,15 @@ class CarlinkManager(
             // treated as a session termination that triggers restart(); Phase 0 in any other
             // state is normal session negotiation and is logged without action.
             is PhaseMessage -> {
-                if (message.phase == 13) {
+                if (message.phase == 13 && awaitingCarPlayStart) {
+                    // [209] No Phase 7 since PLUGGED: the phone never started its session (the
+                    // adapter gives up 31.7 s after PLUGGED). Not a rejection of our settings.
+                    logWarn(
+                        "[PHASE] Phase 13 (negotiation_failed) before CarPlay started — not a rejected configuration",
+                        tag = Logger.Tags.ADAPTR,
+                    )
+                    onCarPlayStartStuck("Phase 13 before CarPlay started")
+                } else if (message.phase == 13) {
                     logWarn(
                         "[PHASE] Phase 13 (negotiation_failed) — Phone rejected configuration",
                         tag = Logger.Tags.ADAPTR,
@@ -2588,9 +2783,11 @@ class CarlinkManager(
                         tag = Logger.Tags.ADAPTR,
                     )
                 } else if (message.phase == 7) {
+                    cancelCarPlayStartCheck() // [209] the session started
                     setStatusText("Phone connecting...")
                     logDebug("[PHASE] ${message.phase} (${message.phaseName})", tag = Logger.Tags.ADAPTR)
                 } else {
+                    if (message.phase == 8) cancelCarPlayStartCheck() // [209]
                     logDebug("[PHASE] ${message.phase} (${message.phaseName})", tag = Logger.Tags.ADAPTR)
                 }
             }
@@ -3320,6 +3517,7 @@ class CarlinkManager(
         clearPairTimeout()
         cancelUnplugGrace() // Error supersedes the gentle post-unplug wait
         cancelPhoneSearchRetry()
+        cancelCarPlayStartCheck()
 
         // Full session state reset (mirrors stop() minus cancelReconnect/graceful teardown)
         cancelDelayedKeyframe()
@@ -3442,6 +3640,27 @@ class CarlinkManager(
             setStatusText("Waiting for head unit…")
             cancelReconnect()
             CarlinkMediaBrowserService.stopConnectionForeground(context)
+            return
+        }
+
+        // [209] A rebooting adapter reconnects on its re-attach (onUsbDeviceAttached). Until
+        // then a retry could only reach the instance that's going away, so wait — and retry
+        // anyway if it hasn't re-attached within ADAPTER_REBOOT_WAIT_MS.
+        val rebootLeftMs = rebootWaitLeftMs()
+        if (rebootLeftMs > 0) {
+            setStatusText(REBOOT_STATUS)
+            CarlinkMediaBrowserService.startConnectionForeground(context)
+            reconnectJob =
+                scope.launch {
+                    delay(rebootLeftMs)
+                    if (state == State.DISCONNECTED) {
+                        logWarn(
+                            "[REBOOT] Adapter not back ${ADAPTER_REBOOT_WAIT_MS / 1000}s after the reboot — retrying",
+                            tag = Logger.Tags.USB,
+                        )
+                        scheduleReconnect()
+                    }
+                }
             return
         }
 

@@ -1476,3 +1476,37 @@
    - UNTESTED: not compiled in the authoring environment (no Android SDK); not run on hardware.
    - Affected: protocol/MessageSerializer.kt, CarlinkManager.kt, documents/reference/carlink2_bridge.md,
      app/build.gradle.kts.
+
+[209] :: Reboot the adapter when CarPlay never starts; Reset Device now reboots the adapter.
+   - On-truck 2026-10-12 17:13–17:19 (v208): a second iPhone near the truck got CarPlay first (48 s), then dropped.
+     The driver's iPhone reached PLUGGED (wifi=1) four times but never Phase 7; three times the adapter sent
+     Phase 13 exactly 31.7 s after PLUGGED (one more was cut off by an activity restart). The app showed "Phone
+     rejected configuration", stopped retrying ([77]) and sat until the 60 s silence watchdog or Reset Device. At
+     17:19:26 the adapter reported its Wi-Fi empty (WIFI_DISCONNECTED, the first since that phone's
+     WIFI_CONNECTED at 17:13:59); the next PLUGGED reached Phase 7 in 0.4 s. Most likely the other iPhone was still
+     on the adapter's Wi-Fi (inference). Every successful start in the truck logs so far: Phase 7 0.2–1.0 s after
+     PLUGGED.
+   - Phase 13 after Phase 7 is still a rejected configuration (viewArea case, unchanged). Phase 13 with no Phase 7
+     since a wireless CarPlay PLUGGED is now "never started", not a rejection.
+   - CarPlay-start check: a wireless CarPlay PLUGGED arms a 10 s timer (CARPLAY_START_TIMEOUT_MS); Phase 7/8,
+     video, UNPLUGGED, stop() and error teardown cancel it. On expiry (or on a never-started Phase 13) the adapter
+     is rebooted, which restarts its Wi-Fi: once per 10 min (AUTO_REBOOT_COOLDOWN_MS), not with the display off.
+     Inside the cooldown the status reads "CarPlay didn't start — retrying…" and the UNPLUGGED after the adapter's
+     Phase 13 goes through the normal unplug grace (10 s, then restart) instead of waiting for the watchdog.
+   - Reboot wait: rebootAdapter() marks the reboot (process-wide, survives a manager rebuild), drops the session
+     without an error teardown, shows "Restarting the adapter — about a minute…" and doesn't reconnect until the
+     adapter re-attaches (onUsbDeviceAttached), or after 90 s (ADAPTER_REBOOT_WAIT_MS) as a fallback. start() and
+     scheduleReconnect() both hold off meanwhile. If the reboot can't be sent (no open session), no wait.
+     The Settings "Reboot Adapter" button uses the same path; its dialog now says about a minute, not 15 s.
+   - Reset Device (connecting screen) reboots the adapter, then rebuilds the manager as before. The old reset only
+     rebuilt the app side and left the adapter's Wi-Fi alone (two presses above, neither helped). Not when no
+     session is open (nothing to send it over), and not within 2 min of the last reboot (RESET_REBOOT_GUARD_MS:
+     an impatient second press only reconnects). Settings → Reset Connection stays the quick, app-only reset.
+   - Why a reboot is affordable now: it re-enumerates the adapter while the driver's profile is up, so the bridge
+     gets the USB grant silently. Same drive: the adapter re-plugged twice at 17:13 (/010→/011→/012), both
+     perm=true, no prompt.
+   - Logs: [CARPLAY_START] …, [REBOOT] Adapter restarting / Adapter back Ns after the reboot / not back 90s,
+     "[PHASE] Phase 13 (negotiation_failed) before CarPlay started", "[UI_ACTION] Reset Device — …".
+   - UNTESTED: not compiled in the authoring environment (no Android SDK); not run on hardware.
+   - Affected: CarlinkManager.kt, MainActivity.kt, ui/MainScreen.kt, ui/settings/AdapterConfigurationDialog.kt,
+     documents/reference/carlink2_bridge.md, adapter RE docs (Phase 13), app/build.gradle.kts.

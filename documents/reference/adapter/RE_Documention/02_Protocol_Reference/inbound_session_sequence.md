@@ -176,3 +176,7 @@ Follows immediately after streaming begins.
    (Dur=0s, Reason=noErr) when `viewAreasArray` constraints are violated — specifically
    when `viewArea` dimensions exceed `display` dimensions in the AirPlay SETUP request.
    This produces a Phase 7→13 reconnect loop with no streaming.
+   It is also sent with no Phase 7 at all, 31.7 s after `Plugged`, when the phone reaches the
+   adapter over Bluetooth but never starts the AirPlay session (truck log 2026-10-12: a second
+   iPhone that had just used CarPlay was most likely still on the adapter's Wi-Fi; the next
+   `Plugged` after `WIFI_DISCONNECTED` reached Phase 7 in 0.4 s). Not a configuration problem.

@@ -814,7 +814,7 @@ fun AdapterConfigurationDialog(
                                     },
                                     title = { Text("Reboot Adapter?") },
                                     text = {
-                                        Text("The adapter will restart. It will reconnect automatically in about 15 seconds.")
+                                        Text("The adapter will restart. It will reconnect automatically in about a minute.")
                                     },
                                     confirmButton = {
                                         TextButton(

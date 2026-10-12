@@ -144,9 +144,14 @@ for the single app; the 4-minute stall above happened with 0. ericyanush's split
 the key (adapter at default 1) and reports no prompts on any boot. [208] sends
 `AutoResetUSB=1` explicitly — the adapter persists the value, so an adapter that stored 0
 must be set back — and waits ~30 s before the bridge's one-time prompt (step 2 above), which
-stays as the backstop. Unverified on our truck: the first session after updating stores the
-setting; the next cold start is the test (the adapter should come back as a new
-`/dev/bus/usb` device soon after boot with `perm=true`, and no `prompt shown` event).
+stays as the backstop. Seen on the truck 2026-10-12 17:13 (v208): the instance present when
+the app started (`/001/010`) dropped 3 s later and came back as `/001/011` with `perm=true`, no
+prompt.
+
+**[209] — adapter reboots.** A reboot re-attaches the adapter the same way, while the driver's
+profile is up, so it costs no prompt either. Reset Device now reboots the adapter, and the app
+reboots it on its own when a wireless CarPlay phone never starts its session; it then waits for
+the re-attach (`[REBOOT]` lines in the log) instead of retrying into the old instance.
 
 ## Diagnostics without adb
 

@@ -11,8 +11,7 @@ Carlink2 is enigy's two-app build of Carlink for the GM gminfo3.7 head unit (bas
 
 The bridge takes the package name AAOS hands every USB attach to, so it gets USB permission
 without the dialog, and it claims the Templates Host icon authority Play won't give a fork, so
-HUD maneuver icons render. The display app falls back to its own USB dialog when the bridge is
-missing or hasn't been granted the adapter. Details, install order and diagnostics:
+HUD maneuver icons render. Details, install order and diagnostics:
 [documents/reference/carlink2_bridge.md](documents/reference/carlink2_bridge.md).
 
 To install the bridge app, you will either need to use ADB (difficult) or clone and deploy the AAOS File Launcher app.  See https://github.com/muzso/fileslauncher for the process.

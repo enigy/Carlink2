@@ -97,7 +97,7 @@ Audio:
 
 
 > [!IMPORTANT]
-> My Primary smartphone is an iPhone and therefor Carplay as gotten the most tuning and testing.
+> My Primary smartphone is an iPhone and therefor Carplay has gotten the most tuning and testing.
 
 ## Screen Shots from Android Emulator with USB-PassThrough for CPC200-CCPA Use
 

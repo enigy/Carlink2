@@ -46,7 +46,7 @@ Carlink is a **native** Kotlin code implementation from the original [Flutter-ba
 > Vehicles running the GM VCU radio (Bosch VCUNH1 — most EVs and newer Fuel/ICE vehicles) on GM AAOS 14+ do not use any icon provided by the app. GM VMSPlugin still passes them, but the Cluster ECU ignores it and renders from its own internal icon set based on the manuver type (VMSPlugin's setManeuverType() enum forces the GM glyph). Earlier VCU vehicles on AAOS 12 or 13 may have behaved differently before being upgraded.
 >
 > [!TIP]
-> Before complaining about Audio issues.
+Before complaining about Audio issues.
 > 1. Disconnect and forget the Phone and Vehicle from each others Bluetooth. The adapter defaults to audio routing THROUGH the adapter for both microhone input and audio output. Make sure you allowed microphone access to the app.
 > 2. Steering Wheel Voice/Call Control doesn't work. That is a system-level app featuer and this is not that. If you want Steering Wheel Voice Controls, then ignore #1 and set the in-app adapter audio routing to Bluetooth. THe Phone and Vehicle will stay connected for ALL audio related events.
 

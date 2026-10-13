@@ -68,6 +68,7 @@ import com.carlink.logging.logInfo
 import com.carlink.protocol.MessageSerializer
 import com.carlink.protocol.MultiTouchAction
 import com.carlink.protocol.PhoneType
+import com.carlink.ui.components.BridgeSetupPanel
 import com.carlink.ui.components.ForestFogEffect
 import com.carlink.ui.components.LoadingSpinner
 import com.carlink.ui.components.VideoSurface
@@ -87,6 +88,10 @@ fun MainScreen(
     // Fired once each time the phone transitions to connected (DEVICE_CONNECTED/STREAMING).
     // MainActivity uses it to refresh the cluster binding so each trip gets a fresh session.
     onPhoneConnected: () -> Unit = {},
+    // [210] False shows the bridge setup panel in place of the status text. onOpenFiles starts
+    // the built-in Files app and returns false if it couldn't.
+    bridgeInstalled: Boolean = true,
+    onOpenFiles: () -> Boolean = { false },
 ) {
     val scope = rememberCoroutineScope()
     // Key state on carlinkManager identity — when manager is replaced (display mode reinit),
@@ -368,26 +373,31 @@ fun MainScreen(
                 // Drifting fog over the forest (bottom ~20%), in place of the sparkle particles.
                 ForestFogEffect()
 
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
-                    // Shift the icon + status text down ~1/2 inch (80dp = 1/2" at 160dp/in) from
-                    // dead-centre so it sits lower over the image.
-                    modifier = Modifier.offset(y = 80.dp),
-                ) {
-                    Image(
-                        painter = painterResource(id = R.drawable.ic_phone_projection),
-                        contentDescription = "Carlink",
-                        modifier = Modifier.height(220.dp),
-                    )
+                if (!bridgeInstalled) {
+                    // [210] Nothing else on this screen can work until the bridge is installed.
+                    BridgeSetupPanel(onOpenFiles = onOpenFiles)
+                } else {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                        // Shift the icon + status text down ~1/2 inch (80dp = 1/2" at 160dp/in) from
+                        // dead-centre so it sits lower over the image.
+                        modifier = Modifier.offset(y = 80.dp),
+                    ) {
+                        Image(
+                            painter = painterResource(id = R.drawable.ic_phone_projection),
+                            contentDescription = "Carlink",
+                            modifier = Modifier.height(220.dp),
+                        )
 
-                    Spacer(modifier = Modifier.height(24.dp))
+                        Spacer(modifier = Modifier.height(24.dp))
 
-                    Text(
-                        text = "[ $statusText ]",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = Color(0xFFDDE4E5), // Fixed light color for dark overlay
-                    )
+                        Text(
+                            text = "[ $statusText ]",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = Color(0xFFDDE4E5), // Fixed light color for dark overlay
+                        )
+                    }
                 }
             }
 

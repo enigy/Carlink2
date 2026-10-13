@@ -186,8 +186,8 @@ object NavigationStateManager {
      * head unit — in Carlink2, by the sideloaded bridge. Without a claimant the host's icon
      * insert fails, so maneuver bitmaps are pointless and are dropped.
      *
-     * Called once from [com.carlink.CarlinkManager] init and cached for the process: installing
-     * the bridge while this app is running takes effect on the next app start.
+     * Called once from [com.carlink.CarlinkManager] init and cached for the process. If the
+     * bridge is installed while this app is running, [recheckClusterIconProvider] resolves again.
      */
     fun initialize(context: Context) {
         if (isClusterIconProviderAvailable != null) return
@@ -229,6 +229,12 @@ object NavigationStateManager {
                 )
             }
         }
+    }
+
+    /** [210] The bridge, which hosts the provider, was installed while this process ran. */
+    fun recheckClusterIconProvider(context: Context) {
+        synchronized(this) { isClusterIconProviderAvailable = null }
+        initialize(context)
     }
 
     /**

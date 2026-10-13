@@ -62,7 +62,9 @@ import com.carlink.ui.settings.AdapterConfigPreference
 import com.carlink.ui.settings.DisplayMode
 import com.carlink.ui.settings.DisplayModePreference
 import com.carlink.ui.theme.CarlinkTheme
+import com.carlink.util.FilesLauncher
 import com.carlink.util.IconAssets
+import com.carlink.usb.CarlinkBridge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -140,6 +142,14 @@ class MainActivity : ComponentActivity() {
     // Observable state for Compose — replacement triggers recomposition of CarlinkApp
     private val carlinkManagerState = mutableStateOf<CarlinkManager?>(null)
     private val displayModeState = mutableStateOf(DisplayMode.SYSTEM_UI_VISIBLE)
+
+    // [210] Whether the USB bridge is installed; false shows the setup panel. See checkBridgeInstalled.
+    private val bridgeInstalledState = mutableStateOf(true)
+
+    private companion object {
+        // Last answer of checkBridgeInstalled, process-wide; null until the first check.
+        var lastBridgeInstalled: Boolean? = null
+    }
 
     // Pending reinit handler — tracked for cancellation on rapid display mode changes
     private var pendingReinitRunnable: Runnable? = null
@@ -339,6 +349,8 @@ class MainActivity : ComponentActivity() {
         // each tick, so it's safe to start unconditionally.
         mainHandler.postDelayed(clusterWatchdogRunnable, clusterWatchdogIntervalMs)
 
+        checkBridgeInstalled()
+
         // Set up Compose UI
         // CarlinkManager is observed via mutableStateOf — replacement during display mode
         // reinit triggers full recomposition without Activity restart.
@@ -360,6 +372,8 @@ class MainActivity : ComponentActivity() {
                             // fresh HWC plane, fresh WindowMetrics, renegotiated Open() — every time.
                             onResetConnection = ::resetDevice,
                             onPhoneConnected = ::onPhoneConnectedRefreshCluster,
+                            bridgeInstalled = bridgeInstalledState.value,
+                            onOpenFiles = { FilesLauncher.open(this@MainActivity) },
                         )
                     }
                 }
@@ -372,6 +386,28 @@ class MainActivity : ComponentActivity() {
         // Restore display mode when returning to app
         // System may have shown bars while app was in background
         applyDisplayMode(currentDisplayMode)
+        checkBridgeInstalled()
+    }
+
+    /**
+     * [210] Is the USB bridge installed? Checked at start and on every resume, so coming back
+     * from installing it in Files hides the setup panel and connects at once. The last answer
+     * lives in the companion so an activity recreated in between still sees the change.
+     */
+    private fun checkBridgeInstalled() {
+        val installed = CarlinkBridge.isInstalled(this)
+        bridgeInstalledState.value = installed
+        val previous = lastBridgeInstalled
+        lastBridgeInstalled = installed
+        if (previous == installed) return
+        if (!installed) {
+            logWarn("[BRIDGE_SETUP] USB bridge not installed — showing the setup panel", tag = "MAIN")
+        } else if (previous == false) {
+            logInfo("[BRIDGE_SETUP] USB bridge installed", tag = "MAIN")
+            // The HUD icon provider lives in the bridge; its lookup is cached per process.
+            NavigationStateManager.recheckClusterIconProvider(this)
+            carlinkManager?.onBridgeInstalled()
+        }
     }
 
     override fun onStart() {
@@ -1317,6 +1353,8 @@ fun CarlinkApp(
     onReinitForDisplayMode: (DisplayMode) -> Unit = {},
     onResetConnection: () -> Unit = {},
     onPhoneConnected: () -> Unit = {},
+    bridgeInstalled: Boolean = true,
+    onOpenFiles: () -> Boolean = { false },
 ) {
     // Survives normal recomposition via remember{}, but discarded on manager rebuild
     // because CarlinkApp itself is gated by `if (manager != null)` at the Activity
@@ -1354,6 +1392,8 @@ fun CarlinkApp(
             },
             onResetConnection = onResetConnection,
             onPhoneConnected = onPhoneConnected,
+            bridgeInstalled = bridgeInstalled,
+            onOpenFiles = onOpenFiles,
         )
 
         // SettingsScreen slides in ON TOP of MainScreen

@@ -194,7 +194,11 @@ reconnecting`, `[BRIDGE] Bridge stream ended: …`. Bridge events: `prompt shown
    icon authority, and Android refuses a second claimant
    (`INSTALL_FAILED_CONFLICTING_PROVIDER`). The old Play build doesn't declare it and can
    stay, but two apps fighting over the adapter is not a useful test.
-2. Sideload `bridge-release.apk` from the USB drive.
+2. Sideload `bridge-release.apk` from the USB drive (published as `app/carlink2_bridge.apk`).
+   While the bridge is missing, Carlink2's connecting screen says so and has an **Open Files**
+   button that starts the head unit's hidden built-in Files app, which can install it ([210]).
+   Coming back to Carlink2 after installing connects without a restart; the adapter then needs
+   the one-tap USB prompt (or a replug), since it attached before the bridge existed.
 3. Install Carlink2 from Play (internal testing track).
 4. Once the head unit has fully started, unplug and replug the adapter so the platform runs
    the fixed handler with the bridge present. (A head-unit power cycle doesn't do it: the

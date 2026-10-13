@@ -177,6 +177,7 @@ class CarlinkManager(
 
         private const val PROMPT_STATUS = "Approve the USB access prompt"
         private const val REPLUG_STATUS = "Unplug and replug the adapter"
+        private const val INSTALL_BRIDGE_STATUS = "Install the Carlink2 USB bridge"
 
         // [209] A wireless CarPlay phone that reaches PLUGGED starts its session (Phase 7) within
         // about a second — 0.2–1.0 s in every truck log so far. Truck log 2026-10-12 17:15: with
@@ -1239,7 +1240,7 @@ class CarlinkManager(
                 }
                 BridgeUsbTransport.OpenResult.NotInstalled -> {
                     logWarn("[BRIDGE] Bridge not installed — cannot open the adapter", tag = Logger.Tags.USB)
-                    "Install the Carlink2 USB bridge"
+                    INSTALL_BRIDGE_STATUS
                 }
                 BridgeUsbTransport.OpenResult.NoPermission -> {
                     val now = android.os.SystemClock.elapsedRealtime()
@@ -1963,6 +1964,22 @@ class CarlinkManager(
             return
         }
         logInfo("[USB] Adapter attached while disconnected — reconnecting", tag = Logger.Tags.USB)
+        cancelReconnect()
+        scheduleWakeConnect()
+    }
+
+    /**
+     * [210] The USB bridge was installed while this app was running (MainActivity re-checks on
+     * every resume, e.g. coming back from installing it in Files). An adapter that attached
+     * before the bridge existed was never granted to it, so skip the grace window and let the
+     * next attempt ask for permission at once ([205]) — a replug works too. Connect now rather
+     * than at the next holding-pattern retry.
+     */
+    fun onBridgeInstalled() {
+        bridgeNoPermissionSinceMs = SystemClock.elapsedRealtime() - BRIDGE_PERMISSION_GRACE_MS
+        if (bridgeBlockedStatus == INSTALL_BRIDGE_STATUS) bridgeBlockedStatus = null
+        if (state != State.DISCONNECTED || suspendedForScreenOff) return
+        logInfo("[BRIDGE] USB bridge installed — connecting", tag = Logger.Tags.USB)
         cancelReconnect()
         scheduleWakeConnect()
     }
@@ -3805,6 +3822,9 @@ class CarlinkManager(
             }
         }
         if (!CarlinkBridge.isInstalled(context)) return false
+        // [210] Just installed: it can't have a grant for an adapter that attached before it
+        // existed, so let start() take it through the permission path instead of waiting here.
+        if (bridgeBlockedStatus == INSTALL_BRIDGE_STATUS) return true
         val bridge = CarlinkBridge.connect(context) ?: return false
         return runCatching { bridge.hasPermission(device.deviceName) }.getOrDefault(false)
     }

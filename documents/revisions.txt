@@ -1510,3 +1510,26 @@
    - UNTESTED: not compiled in the authoring environment (no Android SDK); not run on hardware.
    - Affected: CarlinkManager.kt, MainActivity.kt, ui/MainScreen.kt, ui/settings/AdapterConfigurationDialog.kt,
      documents/reference/carlink2_bridge.md, adapter RE docs (Phase 13), app/build.gradle.kts.
+
+[210] :: Bridge setup panel for new installs: says the USB bridge is missing and opens Files to install it.
+   - MainActivity checks CarlinkBridge.isInstalled() at start and on every resume. While it's missing, the connecting
+     screen shows "USB bridge not installed" with where to get the APK (github.com/enigy/Carlink2 →
+     app/carlink2_bridge.apk), the USB-drive steps, and an Open Files button, in place of the status text.
+   - Open Files (util/FilesLauncher) starts the built-in Files app (DocumentsUI) that AAOS makers hide from the app
+     list, the same lookup as muzso/fileslauncher: launch intent of com.android.documentsui or
+     com.google.android.documentsui, else their FilesActivity / LauncherActivity. Manifest <queries> gains both
+     packages. If none starts, the panel says to use adb. Files isn't distraction-optimized: parked only.
+   - Coming back after installing: the panel goes away, the HUD icon provider lookup (cached per process) is
+     re-run (NavigationStateManager.recheckClusterIconProvider), and CarlinkManager.onBridgeInstalled() connects
+     at once with the permission grace skipped, so the bridge's one-tap USB prompt ([205]) comes up right away (the
+     adapter attached before the bridge existed, so it has no grant; a replug also works).
+   - Fix: with "Install the Carlink2 USB bridge" showing, the reconnect loop's quiet check (bridgeReady) waited for
+     the bridge to hold USB permission, which a just-installed bridge never has, so the screen stayed on the
+     install message after installing until a replug. It now lets start() through once the bridge is installed.
+   - Not built: downloading the bridge inside the app. A Play app may not use REQUEST_INSTALL_PACKAGES for this and
+     may not download executable code from outside Play (Device and Network Abuse policy). Either puts the Play
+     listing at risk, and the display app depends on being installed from Play.
+   - UNTESTED: not compiled in the authoring environment (no Android SDK); not run on hardware.
+   - Affected: MainActivity.kt, ui/MainScreen.kt, ui/components/BridgeSetupPanel.kt (new), util/FilesLauncher.kt
+     (new), CarlinkManager.kt, navigation/NavigationStateManager.kt, AndroidManifest.xml,
+     documents/reference/carlink2_bridge.md, app/build.gradle.kts.

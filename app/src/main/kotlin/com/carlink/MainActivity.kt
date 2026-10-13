@@ -344,8 +344,8 @@ class MainActivity : ComponentActivity() {
         // [212] Notice the bridge finishing its install while the user is still in Files
         registerBridgePackageReceiver()
 
-        // [214] Keep the system bars as they are while CarAppActivity briefly holds the front
-        application.registerActivityLifecycleCallbacks(carAppActivityBars)
+        // [214]/[215] CarAppActivity briefly holds the front: keep the bars as they are and it invisible
+        application.registerActivityLifecycleCallbacks(carAppActivityWindow)
 
         // Launch CarAppActivity to trigger Templates Host → cluster binding chain.
         // Skipped entirely when cluster navigation is disabled — no reason to start
@@ -483,7 +483,7 @@ class MainActivity : ComponentActivity() {
         // Unregister head-unit display-power signals
         unregisterScreenReceiver()
         runCatching { unregisterReceiver(bridgePackageReceiver) }
-        application.unregisterActivityLifecycleCallbacks(carAppActivityBars)
+        application.unregisterActivityLifecycleCallbacks(carAppActivityWindow)
         unregisterDisplayListener()
 
         // Release the CarlinkManager (it detaches its transport callback from the
@@ -1013,7 +1013,7 @@ class MainActivity : ComponentActivity() {
      * Applies the specified display mode by showing/hiding system bars.
      *
      * @param mode The display mode to apply
-     * @param window This activity's window, or CarAppActivity's ([carAppActivityBars])
+     * @param window This activity's window, or CarAppActivity's ([carAppActivityWindow])
      */
     private fun applyDisplayMode(
         mode: DisplayMode,
@@ -1201,8 +1201,8 @@ class MainActivity : ComponentActivity() {
      * Post-launch, re-elevates MainActivity with FLAG_ACTIVITY_REORDER_TO_FRONT after
      * 1s. That 1s is the upper-bound pinned by [ClusterMainSession.RelayScreen]'s KDoc
      * ("visible for ~1s before MainActivity returns to front") — change here and the
-     * RelayScreen duration changes too. [carAppActivityBars] keeps the system bars as they are
-     * meanwhile.
+     * RelayScreen duration changes too. [carAppActivityWindow] keeps the activity invisible and the
+     * system bars as they are meanwhile.
      */
     private fun launchCarAppActivity() {
         if (ClusterBindingState.sessionAlive) {
@@ -1249,13 +1249,25 @@ class MainActivity : ComponentActivity() {
      * and widget panel over Carlink2 and shrank the video surface to 1605x960 (truck 2026-10-13
      * 17:20:40.7 → 41.9; the same flash happened in the original Carlink app). Give its window
      * this activity's display mode before it's shown: onStart runs before the window is added.
+     *
+     * [215] With the bars fixed, its content still flashed black for that second (v214 on the
+     * truck): the window is translucent but what the Templates Host draws in it isn't, and GM never
+     * shows that screen anyway ([ClusterMainSession.RelayScreen]). So the window is also made fully
+     * transparent (alpha 0, which also covers its SurfaceView, a child layer) and lets touches through
+     * to Carlink2 underneath. Neither changes the activity's lifecycle or the Host binding.
      */
-    private val carAppActivityBars =
+    private val carAppActivityWindow =
         object : Application.ActivityLifecycleCallbacks {
             override fun onActivityStarted(activity: Activity) {
                 if (activity.javaClass.name == CAR_APP_ACTIVITY) {
-                    applyDisplayMode(currentDisplayMode, activity.window)
-                    logInfo("[CLUSTER] CarAppActivity bars set to ${currentDisplayMode.name}", tag = "MAIN")
+                    val window = activity.window
+                    applyDisplayMode(currentDisplayMode, window)
+                    window.attributes = window.attributes.apply { alpha = 0f }
+                    window.addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)
+                    logInfo(
+                        "[CLUSTER] CarAppActivity window: bars ${currentDisplayMode.name}, invisible, touches pass through",
+                        tag = "MAIN",
+                    )
                 }
             }
 

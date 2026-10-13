@@ -1610,3 +1610,16 @@
    - UNTESTED: not compiled in the authoring environment (no Android SDK); not run on hardware. That GM's widget
      panel follows the focused window's bar request is inferred from MainActivity's own immersive mode hiding it.
    - Affected: MainActivity.kt, app/build.gradle.kts.
+
+[215] :: Make CarAppActivity's window invisible so the cluster refresh no longer flashes black.
+   - On-truck 2026-10-13 (v214): the bars and widget panel no longer flash on phone connect, but the screen still
+     flashed black, more briefly. MainActivity isn't stopped in that window (no onStop/pauseVideo in the v213 log),
+     so the black is CarAppActivity's own content: the window is translucent, but what the Templates Host draws in
+     it isn't. GM never shows that screen (ClusterMainSession.RelayScreen), so nothing is lost by hiding it.
+   - The same onActivityStarted hook now also sets CarAppActivity's window alpha to 0 (its SurfaceView is a child
+     layer, so it's hidden too) and adds FLAG_NOT_TOUCHABLE, so a tap in that second reaches Carlink2 underneath.
+     The activity's lifecycle and the Host binding are unchanged. The callback is renamed carAppActivityWindow.
+   - Log: "[CLUSTER] CarAppActivity window: bars <mode>, invisible, touches pass through".
+   - UNTESTED: not compiled in the authoring environment (no Android SDK); not run on hardware. That the black is
+     CarAppActivity's content (not a task-switch frame) is inferred; if a black frame remains, that's the next suspect.
+   - Affected: MainActivity.kt, app/build.gradle.kts.

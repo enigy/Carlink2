@@ -218,6 +218,15 @@ class CarlinkManager(
 
         @Volatile private var awaitingRebootAttach = false
 
+        /**
+         * [212] True while the bridge setup panel is up: the bridge was missing when Carlink2 was
+         * last on screen (set by MainActivity). Until the user comes back and MainActivity sees the
+         * bridge, nothing connects to it. Truck log 2026-10-13: the two binds made while the user
+         * was still in Files (12:10:15, 12:10:28) timed out; the one after returning connected in
+         * 0.3 s.
+         */
+        @Volatile var bridgeSetupPending = false
+
         // Grace window after a spontaneous phone unplug before we re-initiate the
         // connection. Lets the adapter's autoConn re-pair a transiently-dropped phone
         // (Plugged arrives → resume, no churn) instead of immediately tearing down and
@@ -1248,6 +1257,13 @@ class CarlinkManager(
      * reconnect loop retries, and an attach broadcast ([onUsbDeviceAttached]) retries at once.
      */
     private suspend fun openTransport(device: UsbDevice): UsbTransport? {
+        if (bridgeSetupPending) {
+            logInfo("[BRIDGE] Bridge setup panel is up — not connecting until Carlink2 is back on screen", tag = Logger.Tags.USB)
+            bridgeBlockedStatus = INSTALL_BRIDGE_STATUS
+            setState(State.DISCONNECTED)
+            setStatusText(INSTALL_BRIDGE_STATUS)
+            return null
+        }
         val blocked =
             when (val result = BridgeUsbTransport.open(context, device.deviceName)) {
                 is BridgeUsbTransport.OpenResult.Opened -> {
@@ -2007,6 +2023,7 @@ class CarlinkManager(
      */
     fun onBridgeInstalled() {
         if (bridgeBlockedStatus == INSTALL_BRIDGE_STATUS) bridgeBlockedStatus = null
+        setBridgeNotStarting(false) // [212] misses from before the user came back don't count
         // Already connecting or connected through it (the reconnect loop saw the install first):
         // resetting the binding now would cut that session.
         if (state != State.DISCONNECTED || suspendedForScreenOff) return
@@ -3876,6 +3893,7 @@ class CarlinkManager(
                 }
             }
         }
+        if (bridgeSetupPending) return false // [212] wait for the user to come back
         if (!CarlinkBridge.isInstalled(context)) return false
         // [210] Just installed: it can't have a grant for an adapter that attached before it
         // existed, so let start() take it through the permission path instead of waiting here —

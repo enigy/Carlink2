@@ -197,9 +197,10 @@ reconnecting`, `[BRIDGE] Bridge stream ended: …`. Bridge events: `prompt shown
 2. Sideload `bridge-release.apk` from the USB drive (published as `app/carlink2_bridge.apk`).
    While the bridge is missing, Carlink2's connecting screen says so and has an **Open Files**
    button that starts the head unit's hidden built-in Files app, which can install it ([210]).
-   Coming back to Carlink2 after installing connects without a restart (after a 2 s wait,
-   [211]); the adapter then needs the one-tap USB prompt (or a replug), since it attached before
-   the bridge existed. If the bridge is installed but doesn't answer three fresh tries in a row,
+   When the install finishes, a Carlink2 notification pops up to lead back from Files ([212]).
+   Carlink2 doesn't touch the bridge until you're back, then connects without a restart (after a
+   2 s wait, [211]); the adapter may need the one-tap USB prompt (or a replug) if it attached
+   before the bridge existed. If the bridge is installed but doesn't answer three fresh tries in a row,
    the screen says "USB bridge isn't starting" with a button to its App info page ([211]).
 3. Install Carlink2 from Play (internal testing track).
 4. Once the head unit has fully started, unplug and replug the adapter so the platform runs

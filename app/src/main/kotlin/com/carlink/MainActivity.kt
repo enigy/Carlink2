@@ -15,8 +15,10 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PatternMatcher
 import android.os.SystemClock
 import android.view.WindowManager
+import androidx.lifecycle.Lifecycle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -57,6 +59,7 @@ import com.carlink.navigation.NavigationStateManager
 import com.carlink.protocol.AdapterConfig
 import com.carlink.protocol.KnownDevices
 import com.carlink.ui.MainScreen
+import com.carlink.ui.BridgeSetupNotification
 import com.carlink.ui.SettingsScreen
 import com.carlink.ui.settings.AdapterConfigPreference
 import com.carlink.ui.settings.DisplayMode
@@ -65,6 +68,7 @@ import com.carlink.ui.theme.CarlinkTheme
 import com.carlink.util.FilesLauncher
 import com.carlink.util.IconAssets
 import com.carlink.usb.CarlinkBridge
+import com.enigy.carlink2.bridge.BridgeContract
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -332,6 +336,9 @@ class MainActivity : ComponentActivity() {
         registerScreenReceiver()
         registerDisplayListener()
 
+        // [212] Notice the bridge finishing its install while the user is still in Files
+        registerBridgePackageReceiver()
+
         // Launch CarAppActivity to trigger Templates Host → cluster binding chain.
         // Skipped entirely when cluster navigation is disabled — no reason to start
         // the CarAppActivity → RendererService → CarlinkClusterService chain.
@@ -373,7 +380,7 @@ class MainActivity : ComponentActivity() {
                             onResetConnection = ::resetDevice,
                             onPhoneConnected = ::onPhoneConnectedRefreshCluster,
                             bridgeInstalled = bridgeInstalledState.value,
-                            onOpenFiles = { FilesLauncher.open(this@MainActivity) },
+                            onOpenFiles = ::openFilesForBridge,
                         )
                     }
                 }
@@ -387,6 +394,7 @@ class MainActivity : ComponentActivity() {
         // System may have shown bars while app was in background
         applyDisplayMode(currentDisplayMode)
         checkBridgeInstalled()
+        BridgeSetupNotification.cancel(this) // [212] back in Carlink2: the way-back note is done
     }
 
     /**
@@ -397,6 +405,8 @@ class MainActivity : ComponentActivity() {
     private fun checkBridgeInstalled() {
         val installed = CarlinkBridge.isInstalled(this)
         bridgeInstalledState.value = installed
+        // [212] Before onBridgeInstalled() below: it connects, which this flag would hold off.
+        CarlinkManager.bridgeSetupPending = !installed
         val previous = lastBridgeInstalled
         lastBridgeInstalled = installed
         if (previous == installed) return
@@ -464,6 +474,7 @@ class MainActivity : ComponentActivity() {
 
         // Unregister head-unit display-power signals
         unregisterScreenReceiver()
+        runCatching { unregisterReceiver(bridgePackageReceiver) }
         unregisterDisplayListener()
 
         // Release the CarlinkManager (it detaches its transport callback from the
@@ -1069,6 +1080,53 @@ class MainActivity : ComponentActivity() {
             registerReceiver(usbDetachReceiver, filter)
         }
         logInfo("[USB_DETACH] Registered USB detachment receiver", tag = "MAIN")
+    }
+
+    /**
+     * [212] The bridge package was installed. While the setup panel is up the user is usually
+     * still in Files: pop up the notification that brings them back to Carlink2. Connecting waits
+     * for that return (see [checkBridgeInstalled] and CarlinkManager.bridgeSetupPending).
+     */
+    private val bridgePackageReceiver =
+        object : BroadcastReceiver() {
+            override fun onReceive(
+                context: Context,
+                intent: Intent,
+            ) {
+                if (intent.data?.schemeSpecificPart != BridgeContract.BRIDGE_PACKAGE) return
+                logInfo("[BRIDGE_SETUP] USB bridge package added (${intent.action})", tag = "MAIN")
+                if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                    // Installed while Carlink2 is on screen (adb, say): no return to wait for.
+                    checkBridgeInstalled()
+                } else if (lastBridgeInstalled == false) {
+                    BridgeSetupNotification.showInstalled(context)
+                }
+            }
+        }
+
+    private fun registerBridgePackageReceiver() {
+        // A data-scheme filter can't share the USB receiver's filter. PACKAGE_ADDED for the bridge
+        // is only delivered because the manifest's <queries> makes the package visible.
+        val filter =
+            IntentFilter(Intent.ACTION_PACKAGE_ADDED).apply {
+                addDataScheme("package")
+                addDataSchemeSpecificPart(BridgeContract.BRIDGE_PACKAGE, PatternMatcher.PATTERN_LITERAL)
+            }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(bridgePackageReceiver, filter, RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(bridgePackageReceiver, filter)
+        }
+    }
+
+    /**
+     * [212] Open Files from the bridge setup panel, and post the notification that leads back here
+     * (Files has no way back to Carlink2 of its own).
+     */
+    private fun openFilesForBridge(): Boolean {
+        val opened = FilesLauncher.open(this)
+        if (opened) BridgeSetupNotification.showWaiting(this)
+        return opened
     }
 
     /**

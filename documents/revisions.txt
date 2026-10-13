@@ -1558,3 +1558,24 @@
    - UNTESTED: not compiled in the authoring environment (no Android SDK); not run on hardware.
    - Affected: usb/CarlinkBridge.kt, CarlinkManager.kt, MainActivity.kt, ui/MainScreen.kt,
      ui/components/BridgeSetupPanel.kt, documents/reference/carlink2_bridge.md, app/build.gradle.kts.
+
+[212] :: Connect to a just-installed bridge only once the user is back in Carlink2; a notification leads back from Files.
+   - On-truck 2026-10-13 12:10 (v211): install via the [210] panel worked end to end, but the two connects tried
+     while the user was still in Files (12:10:15, 12:10:28, started by the adapter re-plugging) both timed out; the
+     one after returning (12:10:41) connected in 0.3 s. A third miss would have put "USB bridge isn't starting" on
+     screen at the moment of return. And Files has no way back: only Home, then Carlink2, worked.
+   - CarlinkManager.bridgeSetupPending (process-wide, set by MainActivity at start and on every resume): true while
+     the bridge was missing when Carlink2 was last on screen. Meanwhile openTransport() doesn't touch the bridge
+     (keeps the install status) and the reconnect loop's bridgeReady() stays quiet. On return MainActivity clears it,
+     then onBridgeInstalled() connects after the 2 s wait ([211]) and clears any "isn't starting" state.
+     If the bridge is installed while Carlink2 is on screen (adb), the package receiver runs the same check at once.
+   - Way back: Open Files posts a quiet "Installing the USB bridge — tap to return to Carlink2" notification
+     (channel bridge_setup_waiting, LOW). A PACKAGE_ADDED receiver for android.car.usb.handler (visible through
+     <queries>) replaces it with a heads-up "USB bridge installed — tap to return to Carlink2 and connect"
+     (bridge_setup_installed, HIGH). Tapping either opens MainActivity; every resume cancels it. Files itself can't be
+     given a button, and an app in the background mostly can't bring itself forward, but a notification tap can.
+   - Panel step 4: tap the Carlink2 notification to come back (or Home, then Carlink2).
+   - UNTESTED: not compiled in the authoring environment (no Android SDK); not run on hardware. The heads-up
+     depends on GM showing third-party notifications; the notification list is the fallback.
+   - Affected: CarlinkManager.kt, MainActivity.kt, ui/BridgeSetupNotification.kt (new),
+     ui/components/BridgeSetupPanel.kt, documents/reference/carlink2_bridge.md, app/build.gradle.kts.

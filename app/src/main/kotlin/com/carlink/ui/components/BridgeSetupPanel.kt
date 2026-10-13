@@ -48,7 +48,8 @@ fun BridgeSetupPanel(onOpenFiles: () -> Boolean) {
                 "1. Copy carlink2_bridge.apk to a USB drive ($BRIDGE_APK_LOCATION).\n" +
                 "2. Plug the drive into a free USB port.\n" +
                 "3. Tap Open Files, open the drive, and tap the APK. If asked, allow Files to install apps.\n" +
-                "Then come back here; Carlink2 connects on its own.",
+                "4. When it's installed, tap the Carlink2 notification to come back (or press Home and open " +
+                "Carlink2). Carlink2 connects once you're back.",
         buttonLabel = "Open Files",
         buttonIcon = Icons.Default.FolderOpen,
         failureText = "This head unit's Files app couldn't be opened. Install the bridge with adb instead.",

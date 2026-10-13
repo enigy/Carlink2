@@ -1,7 +1,9 @@
 package com.carlink
 
 import android.Manifest
+import android.app.Activity
 import android.app.ActivityManager
+import android.app.Application
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -17,6 +19,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.PatternMatcher
 import android.os.SystemClock
+import android.view.Window
 import android.view.WindowManager
 import androidx.lifecycle.Lifecycle
 import androidx.activity.ComponentActivity
@@ -153,6 +156,8 @@ class MainActivity : ComponentActivity() {
     private companion object {
         // Last answer of checkBridgeInstalled, process-wide; null until the first check.
         var lastBridgeInstalled: Boolean? = null
+
+        const val CAR_APP_ACTIVITY = "androidx.car.app.activity.CarAppActivity"
     }
 
     // Pending reinit handler — tracked for cancellation on rapid display mode changes
@@ -339,6 +344,9 @@ class MainActivity : ComponentActivity() {
         // [212] Notice the bridge finishing its install while the user is still in Files
         registerBridgePackageReceiver()
 
+        // [214] Keep the system bars as they are while CarAppActivity briefly holds the front
+        application.registerActivityLifecycleCallbacks(carAppActivityBars)
+
         // Launch CarAppActivity to trigger Templates Host → cluster binding chain.
         // Skipped entirely when cluster navigation is disabled — no reason to start
         // the CarAppActivity → RendererService → CarlinkClusterService chain.
@@ -475,6 +483,7 @@ class MainActivity : ComponentActivity() {
         // Unregister head-unit display-power signals
         unregisterScreenReceiver()
         runCatching { unregisterReceiver(bridgePackageReceiver) }
+        application.unregisterActivityLifecycleCallbacks(carAppActivityBars)
         unregisterDisplayListener()
 
         // Release the CarlinkManager (it detaches its transport callback from the
@@ -1004,8 +1013,12 @@ class MainActivity : ComponentActivity() {
      * Applies the specified display mode by showing/hiding system bars.
      *
      * @param mode The display mode to apply
+     * @param window This activity's window, or CarAppActivity's ([carAppActivityBars])
      */
-    private fun applyDisplayMode(mode: DisplayMode) {
+    private fun applyDisplayMode(
+        mode: DisplayMode,
+        window: Window = this.window,
+    ) {
         val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
         val lp = window.attributes
         // LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS is API 30; SHORT_EDGES (API 28) is the
@@ -1188,7 +1201,8 @@ class MainActivity : ComponentActivity() {
      * Post-launch, re-elevates MainActivity with FLAG_ACTIVITY_REORDER_TO_FRONT after
      * 1s. That 1s is the upper-bound pinned by [ClusterMainSession.RelayScreen]'s KDoc
      * ("visible for ~1s before MainActivity returns to front") — change here and the
-     * RelayScreen duration changes too.
+     * RelayScreen duration changes too. [carAppActivityBars] keeps the system bars as they are
+     * meanwhile.
      */
     private fun launchCarAppActivity() {
         if (ClusterBindingState.sessionAlive) {
@@ -1205,7 +1219,7 @@ class MainActivity : ComponentActivity() {
         try {
             val intent =
                 Intent().apply {
-                    setClassName(this@MainActivity, "androidx.car.app.activity.CarAppActivity")
+                    setClassName(this@MainActivity, CAR_APP_ACTIVITY)
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION
                 }
             startActivity(intent)
@@ -1227,6 +1241,42 @@ class MainActivity : ComponentActivity() {
             logWarn("[CLUSTER] Failed to launch CarAppActivity: ${e.message}", tag = "MAIN")
         }
     }
+
+    /**
+     * [214] CarAppActivity (translucent, see the manifest) holds the front for about a second on
+     * every [launchCarAppActivity] — app start, each phone connect, the watchdog. Its window asked
+     * for no bar changes, so while it had focus the head unit put the status bar, navigation bar
+     * and widget panel over Carlink2 and shrank the video surface to 1605x960 (truck 2026-10-13
+     * 17:20:40.7 → 41.9; the same flash happened in the original Carlink app). Give its window
+     * this activity's display mode before it's shown: onStart runs before the window is added.
+     */
+    private val carAppActivityBars =
+        object : Application.ActivityLifecycleCallbacks {
+            override fun onActivityStarted(activity: Activity) {
+                if (activity.javaClass.name == CAR_APP_ACTIVITY) {
+                    applyDisplayMode(currentDisplayMode, activity.window)
+                    logInfo("[CLUSTER] CarAppActivity bars set to ${currentDisplayMode.name}", tag = "MAIN")
+                }
+            }
+
+            override fun onActivityCreated(
+                activity: Activity,
+                savedInstanceState: Bundle?,
+            ) {}
+
+            override fun onActivityResumed(activity: Activity) {}
+
+            override fun onActivityPaused(activity: Activity) {}
+
+            override fun onActivityStopped(activity: Activity) {}
+
+            override fun onActivitySaveInstanceState(
+                activity: Activity,
+                outState: Bundle,
+            ) {}
+
+            override fun onActivityDestroyed(activity: Activity) {}
+        }
 
     /**
      * Tears down the cluster binding chain and re-establishes it.
@@ -1254,7 +1304,7 @@ class MainActivity : ComponentActivity() {
         lastClusterRelaunchElapsedMs = SystemClock.elapsedRealtime()
         val am = getSystemService(ActivityManager::class.java)
         for (appTask in am.appTasks) {
-            if (appTask.taskInfo.baseActivity?.className == "androidx.car.app.activity.CarAppActivity") {
+            if (appTask.taskInfo.baseActivity?.className == CAR_APP_ACTIVITY) {
                 logInfo("[CLUSTER] Finishing CarAppActivity task (taskId=${appTask.taskInfo.taskId})", tag = "MAIN")
                 appTask.finishAndRemoveTask()
                 break

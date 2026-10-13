@@ -1595,3 +1595,18 @@
    - UNTESTED: not compiled in the authoring environment (no Android SDK); not run on hardware.
    - Affected: navigation/Iap2ManeuverData.kt, navigation/NavigationStateManager.kt,
      documents/reference/adapter/RE_Documention/02_Protocol_Reference/iap2_message_catalog.md, app/build.gradle.kts.
+
+[214] :: Stop the system bars and widget panel flashing over Carlink2 when the phone connects.
+   - On-truck 2026-10-13 17:20 (v213), also seen in the original Carlink app: on each phone connect the cluster
+     refresh relaunches CarAppActivity (translucent, own task) to rebuild the Templates Host binding, and it holds
+     the front for ~1 s until "Brought MainActivity back to foreground". Its window requested no bar changes, so while
+     it had focus the head unit showed the status bar, navigation bar and widget panel over Carlink2; MainActivity's
+     video surface shrank to 1605x960 at 17:20:41.011 and returned to 2400x960 at 17:20:41.927. Same at 17:21:40.
+   - MainActivity registers ActivityLifecycleCallbacks on the application; onActivityStarted for CarAppActivity applies
+     MainActivity's current display mode to that window (applyDisplayMode now takes a window). onStart runs before
+     the window is added, so the bars never change. Covers app start, every phone connect and the watchdog relaunch.
+   - Log: "[CLUSTER] CarAppActivity bars set to <mode>". Expect no "Surface size changed: 1605x960" around
+     "Launched CarAppActivity".
+   - UNTESTED: not compiled in the authoring environment (no Android SDK); not run on hardware. That GM's widget
+     panel follows the focused window's bar request is inferred from MainActivity's own immersive mode hiding it.
+   - Affected: MainActivity.kt, app/build.gradle.kts.

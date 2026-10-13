@@ -144,4 +144,25 @@ data class Iap2RouteData(
         }
         return null
     }
+
+    /**
+     * Position in [maneuvers] of the step the wire numbers [wireIndex] (iAP2 0x5201 field 0x000d),
+     * or null if this plan doesn't hold it. Usually the same number, but a plan re-sent mid-route
+     * (phone reconnect) holds only the steps still ahead — 13..26 of a 27-step route on the truck
+     * 2026-10-13 — so wire index 18 is position 5.
+     */
+    fun positionOf(wireIndex: Int): Int? {
+        val first = maneuvers.firstOrNull() ?: return null
+        val guess = wireIndex - first.index
+        if (maneuvers.getOrNull(guess)?.index == wireIndex) return guess
+        return maneuvers.indexOfFirst { it.index == wireIndex }.takeIf { it >= 0 }
+    }
+
+    /**
+     * True when this plan runs to the last step of a route of [maneuverCount] steps (iAP2 0x5201
+     * field 0x000e), whether it holds the whole route or only the part still ahead. A plan that
+     * stops short (or runs past) belongs to another route. Null count can't be checked; accepted.
+     */
+    fun endsAtStepCount(maneuverCount: Int?): Boolean =
+        maneuverCount == null || maneuvers.lastOrNull()?.index == maneuverCount - 1
 }

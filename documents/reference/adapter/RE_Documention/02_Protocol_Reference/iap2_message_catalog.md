@@ -130,7 +130,7 @@ SDK-authoritative names from `CiAP2RouteGuidanceEngine.RouteGuidanceState` struc
 | 0x000b | `DistanceToNextManeuverDisplayStr` | UTF-8 | 2-4 | 74 | |
 | 0x000c | `DistanceToNextManeuverDisplayUnits` | u8 enum | 1 | 3 | 1/2/4. |
 | 0x000d | `RouteGuidanceManeuverCurrentList` | packed u16 BE | 2 or 4 | 27 | **CURSOR.** len=4 → `(currentIdx, nextIdx)` pair. len=2 → `(nextIdx)` only at depart/arrival. The signal Bug A v1–v5 tried to infer; v6.1 reads it directly. **ID-shift caveat:** the firmware RE doc (2026-03-17) maps this ID to `RouteGuidanceManeuverItems(group)` with `ManeuverCurrentList` at 0x000e — sample value=1 in their capture. Our 2026-05-28 captures show 0x000d carrying the (cur,next) pair behavior and 0x000e holding a constant equal to route length (Park Way=16). Two plausible interpretations: (a) Apple shifted IDs between iOS versions and the SDK names migrated to new positions; (b) the firmware RE author labeled by table position rather than empirical behavior. Either way the SDK string-table entries `"RouteGuidanceManeuverCurrentList"` (rodata 0x74ea0) and `"RouteGuidanceManeuverCount"` (rodata 0x74ec1) both exist in `ARMiPhoneIAP2`, so both names are valid SDK identifiers regardless of which wire ID currently carries them. v6.1's parser is empirically correct (10 V6_FIRED, 0 LAG across Park Way + Alaska). Recommend a Ghidra pass on the patched binary to settle the ID-position question. |
-| 0x000e | `ManeuverCount` | u16 BE | 2 | 6 | Total maneuvers in current route. Park Way=16, Alaska=15. See ID-shift caveat in 0x000d row. |
+| 0x000e | `ManeuverCount` | u16 BE | 2 | 6 | Total maneuvers in current route. Park Way=16, Alaska=15. Stays the whole-route count when the 0x5202 burst holds only the steps still ahead (27 with a 14-step burst, 2026-10-13). See ID-shift caveat in 0x000d row. |
 | 0x000f | `RouteGuidanceVisibleInApp` | u8 bool | 1 | 1 | Always 1 in captures. |
 | 0x0010 | `LaneGuidanceCurrentIndex` | u16 BE | 2 | 1 | Always 0 in current captures (no lane-guidance active). Verified via iOS 26.5 IPSW analysis 2026-05-28. |
 | 0x0011 | `LaneGuidanceTotalCount` | u16 BE | 2 | 1 | Always 0 in current captures. Total lane-guidance slots in current route. |
@@ -170,7 +170,7 @@ iOS 26 SDK-authoritative names from `+[ACCNavigationManeuverUpdateInfo keyForTyp
 | field_id | iOS 26 SDK Name | Type | Notes |
 |---|---|---|---|
 | 0x0000 | (header marker / DisplayComponentID) | u16 BE | Always `0x002a` |
-| 0x0001 | `Index` (maneuver_index) | u16 BE | 0-based, contiguous within burst |
+| 0x0001 | `Index` (maneuver_index) | u16 BE | 0-based, contiguous within burst. Numbers the whole route: a burst re-sent mid-route (phone reconnect) starts at the first step still ahead — 13..26 of 27 on 2026-10-13 — so 0x5201 0x000d is matched against this field, not the list position ([213]). |
 | 0x0002 | `ManeuverDescription` | UTF-8 | Apple's spoken announcement |
 | 0x0003 | `ManeuverType` | u8 | CPManeuverType enum 0-53. See `../06_Reference/maneuver_types.md`. |
 | 0x0004 | `AfterManeuverRoadName` | UTF-8 | Post-maneuver road name, can be empty |

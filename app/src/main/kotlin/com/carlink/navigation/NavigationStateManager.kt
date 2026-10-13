@@ -413,29 +413,33 @@ object NavigationStateManager {
         //   - currentManeuverIdx is null (0x000d absent/empty — both the len-2 [current] and
         //     len-4 [current,next] wire forms now populate currentManeuverIdx, so this is rare)
         //   - route is not loaded yet
-        //   - currentManeuverIdx is out of route bounds (likely a reroute in flight)
-        //   - ManeuverCount disagrees with route plan size (route/cursor desynced)
+        //   - the route plan doesn't hold currentManeuverIdx (likely a reroute in flight)
+        //   - the plan doesn't end at ManeuverCount's last step (route/cursor desynced)
+        //
+        // [213] The wire indices number the whole route, and each plan step carries its own
+        // (Iap2ManeuverData.index), so the cursor is looked up by that number rather than used as
+        // a list position. A plan re-sent after a phone reconnect holds only the steps still ahead
+        // (13..26 of 27 on the truck 2026-10-13); the old size check sent that to Tier C v5, which
+        // fell a step behind when the phone completed two steps at once.
         val routeV6 = com.carlink.navigation.compose.ComposedIconStore.currentRoute()
         val iap2 = lastIap2State
-        if (routeV6 != null && routeV6.maneuvers.isNotEmpty() &&
-            iap2?.currentManeuverIdx != null &&
-            iap2.currentManeuverIdx < routeV6.maneuvers.size &&
-            (iap2.maneuverCount == null || iap2.maneuverCount == routeV6.maneuvers.size)
-        ) {
+        val cursorV6 = iap2?.currentManeuverIdx?.let { routeV6?.positionOf(it) }
+        if (routeV6 != null && iap2 != null && cursorV6 != null && routeV6.endsAtStepCount(iap2.maneuverCount)) {
             if (routeV6 !== lastRouteRef) {
                 lastRouteRef = routeV6
                 lastDistance = -1
                 logInfo(
-                    "[NAVI] V6_FIRED: new route — cursor=${iap2.currentManeuverIdx} (${routeV6.maneuvers.size} steps)",
+                    "[NAVI] V6_FIRED: new route — cursor=$cursorV6 (step #${iap2.currentManeuverIdx}; " +
+                        "${routeV6.maneuvers.size} steps from #${routeV6.maneuvers.first().index})",
                     tag = Logger.Tags.NAVI,
                 )
             }
-            localCursor = iap2.currentManeuverIdx
+            localCursor = cursorV6
             bootstrapDone = true
 
             val routeStep = routeV6.maneuvers[localCursor]
             val nextStep = iap2.nextManeuverIdx?.let { idx ->
-                if (idx < routeV6.maneuvers.size) routeV6.maneuvers[idx] else null
+                routeV6.positionOf(idx)?.let { routeV6.maneuvers[it] }
             } ?: routeV6.maneuvers.getOrNull(localCursor + 1)
             val derivedRoadName = routeStep.instructionText.takeIf { it.isNotEmpty() }
                 ?: routeStep.postManeuverRoadName.takeIf { it.isNotEmpty() }
@@ -481,9 +485,9 @@ object NavigationStateManager {
                 val nextForAlign = routeV6.maneuvers.getOrNull(localCursor + 1)
                 logInfo(
                     "[MANEUVER_ALIGN] liveRemain=${mergedV6.remainDistance}m | " +
-                        "cur[idx=$localCursor type=${routeStep.cpManeuverType} " +
+                        "cur[idx=${routeStep.index} type=${routeStep.cpManeuverType} " +
                         "road='${routeStep.postManeuverRoadName}' dMeters=${routeStep.distanceMeters}] | " +
-                        "next[idx=${localCursor + 1} type=${nextForAlign?.cpManeuverType} " +
+                        "next[idx=${nextForAlign?.index} type=${nextForAlign?.cpManeuverType} " +
                         "road='${nextForAlign?.postManeuverRoadName}' dMeters=${nextForAlign?.distanceMeters}]",
                     tag = Logger.Tags.NAVI,
                 )
@@ -493,14 +497,13 @@ object NavigationStateManager {
             return
         }
 
-        // Diagnostic: ManeuverCount disagreement between Apple's wire and our route plan.
+        // Diagnostic: Apple's wire cursor doesn't fit our route plan.
         // Does NOT alter control flow — v6.1 already fell through to v5 by the gate above.
-        if (iap2?.currentManeuverIdx != null && routeV6 != null &&
-            iap2.maneuverCount != null && iap2.maneuverCount != routeV6.maneuvers.size
-        ) {
+        if (iap2?.currentManeuverIdx != null && routeV6 != null && routeV6.maneuvers.isNotEmpty()) {
             logInfo(
-                "[NAVI] V6_DISCREPANCY: maneuverCount=${iap2.maneuverCount} but route has " +
-                    "${routeV6.maneuvers.size} steps — likely stale route plan, v5 fallback active",
+                "[NAVI] V6_DISCREPANCY: step #${iap2.currentManeuverIdx} of maneuverCount=${iap2.maneuverCount} but " +
+                    "route has #${routeV6.maneuvers.first().index}..#${routeV6.maneuvers.last().index} " +
+                    "— likely stale route plan, v5 fallback active",
                 tag = Logger.Tags.NAVI,
             )
         }

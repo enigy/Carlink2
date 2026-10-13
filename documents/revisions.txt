@@ -1579,3 +1579,19 @@
      depends on GM showing third-party notifications; the notification list is the fallback.
    - Affected: CarlinkManager.kt, MainActivity.kt, ui/BridgeSetupNotification.kt (new),
      ui/components/BridgeSetupPanel.kt, documents/reference/carlink2_bridge.md, app/build.gradle.kts.
+
+[213] :: Keep the HUD step in sync with the phone after a reconnect mid-route.
+   - On-truck 2026-10-13 16:32 (v212): the phone reconnected mid-route and re-sent only the 14 steps still ahead
+     (wire indices 13..26 of 27). v6.1 required the plan to hold the whole route (maneuverCount == plan size), so it
+     logged V6_DISCREPANCY and fell back to Tier C v5. At 16:37:55 the phone completed two steps at once ([13,14] →
+     [15]); v5 advances one step per distance jump, so the HUD text and icon ran one step behind from then on. After
+     the Marietta Hwy turn (16:39:34) the phone was on Hospital Dr but the HUD kept "5 Marietta Hwy to 140 West" with
+     the right-turn icon for 2 min 48 s; the distance, live from the phone, counted down to Hospital Dr correctly.
+   - Iap2RouteData.positionOf(wireIndex) finds a step by its own 0x5202 index; endsAtStepCount(maneuverCount) accepts
+     a plan that runs to the route's last step, whole or tail only. The v6.1 gate uses both, so the wire cursor
+     (and next index) drive the HUD after a reconnect too. Full plans (indices from 0) behave as before.
+   - Logs: V6_FIRED new-route line adds "step #N; K steps from #M". MANEUVER_ALIGN's idx= is now the wire index.
+     V6_DISCREPANCY now reads "step #N of maneuverCount=C but route has #A..#B".
+   - UNTESTED: not compiled in the authoring environment (no Android SDK); not run on hardware.
+   - Affected: navigation/Iap2ManeuverData.kt, navigation/NavigationStateManager.kt,
+     documents/reference/adapter/RE_Documention/02_Protocol_Reference/iap2_message_catalog.md, app/build.gradle.kts.

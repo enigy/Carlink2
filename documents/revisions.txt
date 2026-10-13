@@ -1623,3 +1623,17 @@
    - UNTESTED: not compiled in the authoring environment (no Android SDK); not run on hardware. That the black is
      CarAppActivity's content (not a task-switch frame) is inferred; if a black frame remains, that's the next suspect.
    - Affected: MainActivity.kt, app/build.gradle.kts.
+
+[216] :: Background Logo setting: GMC or CHEVROLET on the connecting screen.
+   - Settings → Adapter Configuration → Visual → Background Logo, with GMC (the existing loading_bg.webp, default)
+     and CHEVROLET (new res/drawable-nodpi/loading_bg_chevrolet.jpg, 2000x805, same mountain scene with the bowtie;
+     nodpi so it isn't upscaled on decode). The fog effect and status text sit on top of either.
+   - BackgroundLogoConfig enum persisted by code ("gmc"/"chevrolet") under DataStore/sync-cache key "background_logo"
+     in AdapterConfigPreference; backgroundLogoFlow / getBackgroundLogoSync / setBackgroundLogo. App-only: no
+     pending adapter change. Default resets it with everything else.
+   - Apply: a logo-only change saves just that key and closes (log tier=SAVE-ONLY) — no reinit, no reconnect, and
+     no other setters (which would queue pending adapter changes). With other changes, Apply runs as before.
+     MainScreen collects the flow, so the background switches at once.
+   - UNTESTED: not compiled in the authoring environment (no Android SDK); not run on hardware.
+   - Affected: ui/settings/AdapterConfigPreference.kt, ui/settings/AdapterConfigurationDialog.kt, ui/MainScreen.kt,
+     res/drawable-nodpi/loading_bg_chevrolet.jpg (new), app/build.gradle.kts.

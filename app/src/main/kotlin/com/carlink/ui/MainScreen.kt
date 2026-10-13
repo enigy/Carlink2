@@ -61,6 +61,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.carlink.BuildConfig
 import com.carlink.CarlinkManager
 import com.carlink.R
@@ -76,6 +77,8 @@ import com.carlink.ui.components.ForestFogEffect
 import com.carlink.ui.components.LoadingSpinner
 import com.carlink.ui.components.VideoSurface
 import com.carlink.ui.components.rememberVideoSurfaceState
+import com.carlink.ui.settings.AdapterConfigPreference
+import com.carlink.ui.settings.BackgroundLogoConfig
 import com.carlink.ui.settings.DisplayMode
 import com.carlink.ui.theme.AutomotiveDimens
 import kotlinx.coroutines.delay
@@ -110,6 +113,11 @@ fun MainScreen(
     // Fire onPhoneConnected once per connection (re-armed on disconnect) so the cluster binding is
     // refreshed at the start of each trip — not on every state tick.
     var connectNotified by remember(carlinkManager) { mutableStateOf(false) }
+    // [216] Settings → Adapter Configuration → Visual → Background Logo; switches as soon as it's saved.
+    val adapterConfig = AdapterConfigPreference.getInstance(LocalContext.current)
+    val backgroundLogo by adapterConfig.backgroundLogoFlow.collectAsStateWithLifecycle(
+        initialValue = adapterConfig.getBackgroundLogoSync(),
+    )
 
     LaunchedEffect(connectionState) {
         logInfo("[UI_STATE] MainScreen connection state: $connectionState", tag = "UI")
@@ -371,8 +379,16 @@ fun MainScreen(
                 // Static mountain background fills the overlay (behind the sparkles + content).
                 // ContentScale.Crop scales to fill the 2400x960 area and centre-crops any overflow
                 // (the image is ~2.49:1, so almost nothing is cropped) — no stretching.
+                // [216] Same scene for both logos (Chevrolet: 2000x805, also ~2.49:1).
                 Image(
-                    painter = painterResource(id = R.drawable.loading_bg),
+                    painter =
+                        painterResource(
+                            id =
+                                when (backgroundLogo) {
+                                    BackgroundLogoConfig.GMC -> R.drawable.loading_bg
+                                    BackgroundLogoConfig.CHEVROLET -> R.drawable.loading_bg_chevrolet
+                                },
+                        ),
                     contentDescription = null,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize(),

@@ -199,6 +199,28 @@ enum class HandDriveConfig(
 }
 
 /**
+ * [216] Brand logo on the connecting screen's background. An app-only setting: never sent to the
+ * adapter, so changing it alone needs no reinit. Persisted by [code].
+ */
+enum class BackgroundLogoConfig(
+    val code: String,
+    val label: String,
+) {
+    /** The original background (res/drawable/loading_bg.webp). */
+    GMC("gmc", "GMC"),
+
+    /** res/drawable-nodpi/loading_bg_chevrolet.jpg — same scene with the Chevrolet bowtie. */
+    CHEVROLET("chevrolet", "CHEVROLET"),
+    ;
+
+    companion object {
+        val DEFAULT = GMC
+
+        fun fromCode(code: String?): BackgroundLogoConfig = entries.find { it.code == code } ?: DEFAULT
+    }
+}
+
+/**
  * Video resolution configuration for adapter initialization.
  *
  * AUTO uses the detected display resolution (usable area after system UI).
@@ -330,6 +352,9 @@ class AdapterConfigPreference private constructor(
         // Cluster navigation: true = show CarPlay turn-by-turn on instrument cluster
         private val KEY_CLUSTER_NAVIGATION = booleanPreferencesKey("cluster_navigation_enabled")
 
+        // Background logo: stored as BackgroundLogoConfig.code ("gmc", "chevrolet")
+        private val KEY_BACKGROUND_LOGO = stringPreferencesKey("background_logo")
+
         // Initialization tracking
         private val KEY_HAS_COMPLETED_FIRST_INIT = booleanPreferencesKey("has_completed_first_init")
         private val KEY_LAST_INIT_VERSION_CODE = longPreferencesKey("last_init_version_code")
@@ -347,6 +372,7 @@ class AdapterConfigPreference private constructor(
         private const val SYNC_CACHE_KEY_HAND_DRIVE = "hand_drive_mode"
         private const val SYNC_CACHE_KEY_GPS_FORWARDING = "gps_forwarding"
         private const val SYNC_CACHE_KEY_CLUSTER_NAVIGATION = "cluster_navigation_enabled"
+        private const val SYNC_CACHE_KEY_BACKGROUND_LOGO = "background_logo"
         private const val SYNC_CACHE_KEY_HAS_COMPLETED_FIRST_INIT = "has_completed_first_init"
         private const val SYNC_CACHE_KEY_LAST_INIT_VERSION_CODE = "last_init_version_code"
         private const val SYNC_CACHE_KEY_PENDING_CHANGES = "pending_changes"
@@ -776,6 +802,34 @@ class AdapterConfigPreference private constructor(
         }
     }
 
+    val backgroundLogoFlow: Flow<BackgroundLogoConfig> =
+        dataStore.data.map { preferences ->
+            BackgroundLogoConfig.fromCode(preferences[KEY_BACKGROUND_LOGO])
+        }
+
+    /**
+     * Get current background logo synchronously (first frame of the connecting screen).
+     */
+    fun getBackgroundLogoSync(): BackgroundLogoConfig =
+        BackgroundLogoConfig.fromCode(syncCache.getString(SYNC_CACHE_KEY_BACKGROUND_LOGO, null))
+
+    /**
+     * Set background logo.
+     * This is a local app setting — does NOT call addPendingChange() (not an adapter config).
+     */
+    suspend fun setBackgroundLogo(config: BackgroundLogoConfig) {
+        try {
+            dataStore.edit { preferences ->
+                preferences[KEY_BACKGROUND_LOGO] = config.code
+            }
+            syncCache.edit().putString(SYNC_CACHE_KEY_BACKGROUND_LOGO, config.code).apply()
+            logInfo("Background logo preference saved: $config", tag = "AdapterConfig")
+        } catch (e: IOException) {
+            logError("Failed to save background logo preference: $e", tag = "AdapterConfig")
+            throw e
+        }
+    }
+
     /**
      * Apply the cluster service component enabled/disabled state based on preference.
      * Call this early in Activity.onCreate() so the state is set before Templates Host discovers it.
@@ -894,6 +948,7 @@ class AdapterConfigPreference private constructor(
                 preferences.remove(KEY_HAND_DRIVE)
                 preferences.remove(KEY_GPS_FORWARDING)
                 preferences.remove(KEY_CLUSTER_NAVIGATION)
+                preferences.remove(KEY_BACKGROUND_LOGO)
                 preferences.remove(KEY_HAS_COMPLETED_FIRST_INIT)
                 preferences.remove(KEY_LAST_INIT_VERSION_CODE)
                 preferences.remove(KEY_PENDING_CHANGES)
@@ -912,6 +967,7 @@ class AdapterConfigPreference private constructor(
                     remove(SYNC_CACHE_KEY_HAND_DRIVE)
                     remove(SYNC_CACHE_KEY_GPS_FORWARDING)
                     remove(SYNC_CACHE_KEY_CLUSTER_NAVIGATION)
+                    remove(SYNC_CACHE_KEY_BACKGROUND_LOGO)
                     remove(SYNC_CACHE_KEY_HAS_COMPLETED_FIRST_INIT)
                     remove(SYNC_CACHE_KEY_LAST_INIT_VERSION_CODE)
                     remove(SYNC_CACHE_KEY_PENDING_CHANGES)

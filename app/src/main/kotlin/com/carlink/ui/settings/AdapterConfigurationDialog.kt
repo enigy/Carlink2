@@ -40,6 +40,7 @@ import androidx.compose.material.icons.filled.SignalCellularAlt
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Usb
+import androidx.compose.material.icons.filled.Wallpaper
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -142,6 +143,9 @@ fun AdapterConfigurationDialog(
     val savedClusterNavigation by adapterConfigPreference.clusterNavigationFlow.collectAsStateWithLifecycle(
         initialValue = false,
     )
+    val savedBackgroundLogo by adapterConfigPreference.backgroundLogoFlow.collectAsStateWithLifecycle(
+        initialValue = adapterConfigPreference.getBackgroundLogoSync(),
+    )
 
     // Get usable display dimensions based on current display mode
     // FULLSCREEN_IMMERSIVE: Use full display bounds (bars are hidden)
@@ -217,6 +221,7 @@ fun AdapterConfigurationDialog(
     var selectedHandDrive by remember { mutableStateOf(savedHandDrive) }
     var selectedGpsForwarding by remember { mutableStateOf(savedGpsForwarding) }
     var selectedClusterNavigation by remember { mutableStateOf(savedClusterNavigation) }
+    var selectedBackgroundLogo by remember { mutableStateOf(savedBackgroundLogo) }
 
     // Sync local state when saved value loads (for initial load).
     // KNOWN THEORETICAL RACE (flow-shadow): any subsequent DataStore emission for one of these
@@ -233,13 +238,14 @@ fun AdapterConfigurationDialog(
     LaunchedEffect(savedHandDrive) { selectedHandDrive = savedHandDrive }
     LaunchedEffect(savedGpsForwarding) { selectedGpsForwarding = savedGpsForwarding }
     LaunchedEffect(savedClusterNavigation) { selectedClusterNavigation = savedClusterNavigation }
+    LaunchedEffect(savedBackgroundLogo) { selectedBackgroundLogo = savedBackgroundLogo }
 
     // Track if any changes were made.
     // NOTE (stale): the old one-liner here claimed "All adapter configuration changes require
     // app restart" — that is no longer true. Apply uses a tiered strategy (see Apply block
     // ~line 828): only Misc changes (GPS/WiFi/ClusterNav) force a Tier-3 app kill; Audio/Visual
     // changes take the Tier-2 in-place reinit path. See also the misleading subtitle at ~line 273.
-    val hasChanges =
+    val adapterSettingsChanged =
         selectedAudioSource != savedAudioSource ||
             selectedMicSource != savedMicSource ||
             selectedWifiBand != savedWifiBand ||
@@ -249,6 +255,8 @@ fun AdapterConfigurationDialog(
             selectedHandDrive != savedHandDrive ||
             selectedGpsForwarding != savedGpsForwarding ||
             selectedClusterNavigation != savedClusterNavigation
+    // [216] The background logo is app-only: changing just that saves without any reinit.
+    val hasChanges = adapterSettingsChanged || selectedBackgroundLogo != savedBackgroundLogo
 
     // Responsive dialog width - 60% of container width, clamped between 320dp and 600dp
     val windowInfo = LocalWindowInfo.current
@@ -657,6 +665,34 @@ fun AdapterConfigurationDialog(
                                     color = colorScheme.primary,
                                 )
                             }
+
+                            // [216] Background Logo — app-only, applies without a reinit
+                            ConfigurationOptionCard(
+                                title = "Background Logo",
+                                description = "Brand logo on the connecting screen.",
+                                icon = Icons.Default.Wallpaper,
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                ) {
+                                    BackgroundLogoConfig.entries.forEach { logo ->
+                                        AudioSourceButton(
+                                            label = logo.label,
+                                            icon = Icons.Default.Wallpaper,
+                                            isSelected = selectedBackgroundLogo == logo,
+                                            onClick = { selectedBackgroundLogo = logo },
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = "${selectedBackgroundLogo.label} logo — applies right away, no reconnect",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = colorScheme.primary,
+                                )
+                            }
                         }
 
                         // ===== Misc Tab =====
@@ -890,6 +926,12 @@ fun AdapterConfigurationDialog(
                         selectedGpsForwarding != savedGpsForwarding ||
                             selectedWifiBand != savedWifiBand ||
                             selectedClusterNavigation != savedClusterNavigation
+                    val applyTier =
+                        when {
+                            miscChanged -> "3-KILL"
+                            adapterSettingsChanged -> "2-REINIT"
+                            else -> "SAVE-ONLY" // [216] background logo only
+                        }
 
                     Button(
                         onClick = {
@@ -905,13 +947,23 @@ fun AdapterConfigurationDialog(
                                     ", handDrive=$selectedHandDrive" +
                                     ", gpsForwarding=$selectedGpsForwarding" +
                                     ", clusterNav=$selectedClusterNavigation" +
-                                    ", tier=${if (miscChanged) "3-KILL" else "2-REINIT"}",
+                                    ", backgroundLogo=$selectedBackgroundLogo" +
+                                    ", tier=$applyTier",
                                 tag = "UI",
                             )
                             // NOTE: "callQuality=1(hardcoded)" in the log string above encodes
                             // the firmware-bug workaround as a literal. If the BoxSettings
                             // hardcode ever changes, this log will silently lie — keep in sync.
                             scope.launch {
+                                // [216] App-only; the connecting screen observes it and switches
+                                // at once. Nothing else changed → no setters (they'd queue pending
+                                // adapter changes) and no reinit.
+                                adapterConfigPreference.setBackgroundLogo(selectedBackgroundLogo)
+                                if (!adapterSettingsChanged) {
+                                    onDismiss()
+                                    return@launch
+                                }
+
                                 // Save all configuration
                                 adapterConfigPreference.setAudioSource(selectedAudioSource)
                                 adapterConfigPreference.setMicSource(selectedMicSource)

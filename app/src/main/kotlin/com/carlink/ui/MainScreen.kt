@@ -56,6 +56,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.IntSize
@@ -68,6 +69,8 @@ import com.carlink.logging.logInfo
 import com.carlink.protocol.MessageSerializer
 import com.carlink.protocol.MultiTouchAction
 import com.carlink.protocol.PhoneType
+import com.carlink.usb.CarlinkBridge
+import com.carlink.ui.components.BridgeNotStartingPanel
 import com.carlink.ui.components.BridgeSetupPanel
 import com.carlink.ui.components.ForestFogEffect
 import com.carlink.ui.components.LoadingSpinner
@@ -102,6 +105,7 @@ fun MainScreen(
     var isResetting by remember(carlinkManager) { mutableStateOf(false) }
     val surfaceState = rememberVideoSurfaceState()
     var isAndroidAuto by remember(carlinkManager) { mutableStateOf(false) }
+    var bridgeNotStarting by remember(carlinkManager) { mutableStateOf(false) } // [211]
     var aaCropParams by remember(carlinkManager) { mutableStateOf<CarlinkManager.AaCropParams?>(null) }
     // Fire onPhoneConnected once per connection (re-armed on disconnect) so the cluster binding is
     // refreshed at the start of each trip — not on every state tick.
@@ -167,6 +171,10 @@ fun MainScreen(
 
                         override fun onHostUIPressed() {
                             onNavigateToSettings()
+                        }
+
+                        override fun onBridgeNotStartingChanged(notStarting: Boolean) {
+                            bridgeNotStarting = notStarting
                         }
 
                         override fun onPhoneTypeChanged(phoneType: PhoneType) {
@@ -376,6 +384,10 @@ fun MainScreen(
                 if (!bridgeInstalled) {
                     // [210] Nothing else on this screen can work until the bridge is installed.
                     BridgeSetupPanel(onOpenFiles = onOpenFiles)
+                } else if (bridgeNotStarting) {
+                    // [211] Installed but not answering.
+                    val context = LocalContext.current
+                    BridgeNotStartingPanel(onOpenAppInfo = { CarlinkBridge.openAppInfo(context) })
                 } else {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,

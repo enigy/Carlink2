@@ -1533,3 +1533,28 @@
    - Affected: MainActivity.kt, ui/MainScreen.kt, ui/components/BridgeSetupPanel.kt (new), util/FilesLauncher.kt
      (new), CarlinkManager.kt, navigation/NavigationStateManager.kt, AndroidManifest.xml,
      documents/reference/carlink2_bridge.md, app/build.gradle.kts.
+
+[211] :: Bridge binding starts over when it doesn't answer; "bridge isn't starting" panel; 2 s wait after install.
+   - On-truck 2026-10-13 11:32–11:34 (v210): after uninstalling and reinstalling the bridge through the [210] panel,
+     every connect attempt (about ten in two minutes) ended in "timed out binding the bridge" after exactly 5 s; the
+     bridge never connected. CarlinkBridge keeps one process-wide binding and, on a timeout, kept waiting on that
+     same binding at every later attempt, so one binding that never connects stalls everything until the app
+     process ends (Reset Device didn't reset it). What broke the binding at install time isn't in the log (it
+     starts after the install). The repo's bridge APK is the current one (1.0.2, has PermissionPrompt).
+     Between attempts the adapter re-plugged itself every ~13 s (AutoResetUSB, no host session), each attach
+     starting the next attempt.
+   - CarlinkBridge: a bind that doesn't connect within 5 s is dropped (unbind), so the next connect() binds afresh.
+     Callbacks from a dropped binding are ignored; the current binding is recorded before bindService so its
+     callback can't be mistaken for a stale one. Counts connect() calls in a row that got no bridge
+     (consecutiveFailures, 0 on connect). reset() drops the binding: on the bridge's install, and on Reset Device.
+   - After 3 such failures in a row (each a fresh bind) the connecting screen shows "USB bridge isn't starting":
+     Carlink2 keeps retrying; Open App info (Settings → the bridge's App info, to Force stop it); restart the head
+     unit if that doesn't help. Goes away the moment the bridge opens the adapter.
+   - After the bridge appears, the first connect waits 2 s (BRIDGE_INSTALL_SETTLE_MS) in case Android is still
+     finishing the install — from the resume check (onBridgeInstalled) and from the reconnect loop (bridgeReady).
+   - Logs: "[BRIDGE] … (no bridge N time(s) in a row) — retrying", "[BRIDGE] USB bridge installed — connecting in
+     2000ms", "[BRIDGE] Bridge installed but not answering — showing the not-starting panel", "[BRIDGE_SETUP] Opened
+     the bridge's App info". The wake-settle line now reads "[POWER] <reason> — settling Nms before connect".
+   - UNTESTED: not compiled in the authoring environment (no Android SDK); not run on hardware.
+   - Affected: usb/CarlinkBridge.kt, CarlinkManager.kt, MainActivity.kt, ui/MainScreen.kt,
+     ui/components/BridgeSetupPanel.kt, documents/reference/carlink2_bridge.md, app/build.gradle.kts.

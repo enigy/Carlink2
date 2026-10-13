@@ -179,6 +179,15 @@ class CarlinkManager(
         private const val REPLUG_STATUS = "Unplug and replug the adapter"
         private const val INSTALL_BRIDGE_STATUS = "Install the Carlink2 USB bridge"
 
+        // [211] After the bridge appears, wait this long before the first connect, in case
+        // Android is still finishing the install.
+        private const val BRIDGE_INSTALL_SETTLE_MS = 2_000L
+
+        // [211] Fresh binds in a row that get no bridge before the screen says it isn't starting
+        // (each attempt drops a binding that didn't answer, so every one is a fresh bind).
+        private const val BRIDGE_NOT_STARTING_AFTER = 3
+        private const val BRIDGE_NOT_STARTING_STATUS = "USB bridge isn't starting"
+
         // [209] A wireless CarPlay phone that reaches PLUGGED starts its session (Phase 7) within
         // about a second — 0.2–1.0 s in every truck log so far. Truck log 2026-10-12 17:15: with
         // a second iPhone still on the adapter's Wi-Fi, Phase 7 never came and the adapter gave
@@ -340,6 +349,9 @@ class CarlinkManager(
 
         /** Called when the adapter's paired device list changes. */
         fun onDeviceListChanged(devices: List<DeviceInfo>) {}
+
+        /** [211] The bridge is installed but keeps not answering (true), or answered (false). */
+        fun onBridgeNotStartingChanged(notStarting: Boolean) {}
     }
 
     /**
@@ -445,6 +457,13 @@ class CarlinkManager(
     @Volatile private var bridgePromptDevice: String? = null
 
     @Volatile private var bridgePromptSinceMs = 0L
+
+    // [211] elapsedRealtime when the bridge was seen installed after being missing (0 = not in
+    // that state); gates the first connect by BRIDGE_INSTALL_SETTLE_MS. And whether the screen
+    // currently says the bridge isn't starting.
+    @Volatile private var bridgeInstalledSeenMs = 0L
+
+    @Volatile private var bridgeNotStarting = false
 
     // Platform AudioManager (distinct from the DualStreamAudioManager `audioManager` field) — used
     // to enter MODE_IN_COMMUNICATION for phone calls (see [enterCommunicationAudioMode]).
@@ -1235,11 +1254,15 @@ class CarlinkManager(
                     bridgeNoPermissionSinceMs = 0L
                     bridgeBlockedStatus = null
                     bridgePromptDevice = null
+                    bridgeInstalledSeenMs = 0L
+                    setBridgeNotStarting(false)
                     logInfo("[BRIDGE] Adapter ${device.deviceName} opened through the bridge", tag = Logger.Tags.USB)
                     return result.transport
                 }
                 BridgeUsbTransport.OpenResult.NotInstalled -> {
                     logWarn("[BRIDGE] Bridge not installed — cannot open the adapter", tag = Logger.Tags.USB)
+                    bridgeInstalledSeenMs = 0L
+                    setBridgeNotStarting(false)
                     INSTALL_BRIDGE_STATUS
                 }
                 BridgeUsbTransport.OpenResult.NoPermission -> {
@@ -1264,8 +1287,15 @@ class CarlinkManager(
                     promptForBridgePermission(device.deviceName)
                 }
                 is BridgeUsbTransport.OpenResult.Failed -> {
-                    logWarn("[BRIDGE] ${result.reason} — retrying", tag = Logger.Tags.USB)
-                    "USB bridge not responding — retrying…"
+                    val failures = CarlinkBridge.consecutiveFailures
+                    logWarn("[BRIDGE] ${result.reason} (no bridge $failures time(s) in a row) — retrying", tag = Logger.Tags.USB)
+                    if (failures >= BRIDGE_NOT_STARTING_AFTER) {
+                        // [211] The setup panel takes over with what the user can do.
+                        setBridgeNotStarting(true)
+                        BRIDGE_NOT_STARTING_STATUS
+                    } else {
+                        "USB bridge not responding — retrying…"
+                    }
                 }
             }
 
@@ -1976,12 +2006,37 @@ class CarlinkManager(
      * than at the next holding-pattern retry.
      */
     fun onBridgeInstalled() {
-        bridgeNoPermissionSinceMs = SystemClock.elapsedRealtime() - BRIDGE_PERMISSION_GRACE_MS
         if (bridgeBlockedStatus == INSTALL_BRIDGE_STATUS) bridgeBlockedStatus = null
+        // Already connecting or connected through it (the reconnect loop saw the install first):
+        // resetting the binding now would cut that session.
         if (state != State.DISCONNECTED || suspendedForScreenOff) return
-        logInfo("[BRIDGE] USB bridge installed — connecting", tag = Logger.Tags.USB)
+        bridgeInstalledSeenMs = 0L // an explicit install signal: always start over
+        noteBridgeInstalled()
         cancelReconnect()
-        scheduleWakeConnect()
+        scheduleWakeConnect(BRIDGE_INSTALL_SETTLE_MS, "USB bridge installed")
+    }
+
+    /**
+     * [211] First sighting of a just-installed bridge: start the [BRIDGE_INSTALL_SETTLE_MS]
+     * clock, drop any binding left from before the install (truck log 2026-10-13: a binding made
+     * around the reinstall never connected), and skip the permission grace ([210]).
+     */
+    private fun noteBridgeInstalled() {
+        if (bridgeInstalledSeenMs != 0L) return
+        val now = SystemClock.elapsedRealtime()
+        bridgeInstalledSeenMs = now
+        bridgeNoPermissionSinceMs = now - BRIDGE_PERMISSION_GRACE_MS
+        CarlinkBridge.reset(context)
+        logInfo("[BRIDGE] USB bridge installed — connecting in ${BRIDGE_INSTALL_SETTLE_MS}ms", tag = Logger.Tags.USB)
+    }
+
+    private fun setBridgeNotStarting(notStarting: Boolean) {
+        if (bridgeNotStarting == notStarting) return
+        bridgeNotStarting = notStarting
+        if (notStarting) {
+            logWarn("[BRIDGE] Bridge installed but not answering — showing the not-starting panel", tag = Logger.Tags.USB)
+        }
+        callback?.onBridgeNotStartingChanged(notStarting)
     }
 
     /**
@@ -3823,8 +3878,12 @@ class CarlinkManager(
         }
         if (!CarlinkBridge.isInstalled(context)) return false
         // [210] Just installed: it can't have a grant for an adapter that attached before it
-        // existed, so let start() take it through the permission path instead of waiting here.
-        if (bridgeBlockedStatus == INSTALL_BRIDGE_STATUS) return true
+        // existed, so let start() take it through the permission path instead of waiting here —
+        // [211] once it has had BRIDGE_INSTALL_SETTLE_MS to settle.
+        if (bridgeBlockedStatus == INSTALL_BRIDGE_STATUS) {
+            noteBridgeInstalled()
+            return SystemClock.elapsedRealtime() - bridgeInstalledSeenMs >= BRIDGE_INSTALL_SETTLE_MS
+        }
         val bridge = CarlinkBridge.connect(context) ?: return false
         return runCatching { bridge.hasPermission(device.deviceName) }.getOrDefault(false)
     }
@@ -3904,12 +3963,15 @@ class CarlinkManager(
      * yields a path that changes moments later, costing a second prompt; settling first means we
      * request for the stabilized device. connect() handles the actual attempt + reconnect backoff.
      */
-    private fun scheduleWakeConnect() {
+    private fun scheduleWakeConnect(
+        settleMs: Long = WAKE_SETTLE_MS,
+        reason: String = "Wake",
+    ) {
         wakeConnectJob?.cancel()
-        logInfo("[POWER] Wake — settling USB ${WAKE_SETTLE_MS}ms before connect", tag = Logger.Tags.USB)
+        logInfo("[POWER] $reason — settling ${settleMs}ms before connect", tag = Logger.Tags.USB)
         wakeConnectJob =
             scope.launch {
-                delay(WAKE_SETTLE_MS)
+                delay(settleMs)
                 if (state == State.DISCONNECTED && !suspendedForScreenOff && isScreenInteractive()) {
                     connect()
                 } else {

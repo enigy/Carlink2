@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -23,6 +24,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import com.carlink.ui.theme.AutomotiveDimens
 
@@ -39,7 +41,50 @@ private val TextColor = Color(0xFFDDE4E5) // same fixed light color as the overl
  */
 @Composable
 fun BridgeSetupPanel(onOpenFiles: () -> Boolean) {
-    var filesUnavailable by remember { mutableStateOf(false) }
+    SetupPanel(
+        title = "USB bridge not installed",
+        body =
+            "Carlink2 needs its USB bridge app to talk to the adapter. To install it while parked:\n" +
+                "1. Copy carlink2_bridge.apk to a USB drive ($BRIDGE_APK_LOCATION).\n" +
+                "2. Plug the drive into a free USB port.\n" +
+                "3. Tap Open Files, open the drive, and tap the APK. If asked, allow Files to install apps.\n" +
+                "Then come back here; Carlink2 connects on its own.",
+        buttonLabel = "Open Files",
+        buttonIcon = Icons.Default.FolderOpen,
+        failureText = "This head unit's Files app couldn't be opened. Install the bridge with adb instead.",
+        onClick = onOpenFiles,
+    )
+}
+
+/**
+ * [211] Shown instead while the bridge is installed but several fresh attempts to reach it got
+ * no answer. Carlink2 keeps retrying underneath; this says what the user can do meanwhile.
+ */
+@Composable
+fun BridgeNotStartingPanel(onOpenAppInfo: () -> Boolean) {
+    SetupPanel(
+        title = "USB bridge isn't starting",
+        body =
+            "The USB bridge is installed but isn't answering Carlink2, which keeps retrying.\n" +
+                "Tap Open App info, then Force stop, and come back here.\n" +
+                "If it still doesn't connect, restart the head unit.",
+        buttonLabel = "Open App info",
+        buttonIcon = Icons.Default.Info,
+        failureText = "Settings has no App info page for the bridge. Restart the head unit.",
+        onClick = onOpenAppInfo,
+    )
+}
+
+@Composable
+private fun SetupPanel(
+    title: String,
+    body: String,
+    buttonLabel: String,
+    buttonIcon: ImageVector,
+    failureText: String,
+    onClick: () -> Boolean,
+) {
+    var failed by remember { mutableStateOf(false) }
     Column(
         modifier =
             Modifier
@@ -48,24 +93,19 @@ fun BridgeSetupPanel(onOpenFiles: () -> Boolean) {
                 .padding(32.dp),
     ) {
         Text(
-            text = "USB bridge not installed",
+            text = title,
             style = MaterialTheme.typography.headlineMedium,
             color = TextColor,
         )
         Spacer(modifier = Modifier.height(16.dp))
         Text(
-            text =
-                "Carlink2 needs its USB bridge app to talk to the adapter. To install it while parked:\n" +
-                    "1. Copy carlink2_bridge.apk to a USB drive ($BRIDGE_APK_LOCATION).\n" +
-                    "2. Plug the drive into a free USB port.\n" +
-                    "3. Tap Open Files, open the drive, and tap the APK. If asked, allow Files to install apps.\n" +
-                    "Then come back here; Carlink2 connects on its own.",
+            text = body,
             style = MaterialTheme.typography.bodyLarge,
             color = TextColor,
         )
         Spacer(modifier = Modifier.height(24.dp))
         FilledTonalButton(
-            onClick = { filesUnavailable = !onOpenFiles() },
+            onClick = { failed = !onClick() },
             modifier = Modifier.height(AutomotiveDimens.ButtonMinHeight),
             contentPadding =
                 PaddingValues(
@@ -74,17 +114,17 @@ fun BridgeSetupPanel(onOpenFiles: () -> Boolean) {
                 ),
         ) {
             Icon(
-                imageVector = Icons.Default.FolderOpen,
+                imageVector = buttonIcon,
                 contentDescription = null,
                 modifier = Modifier.size(AutomotiveDimens.IconSize),
             )
             Spacer(modifier = Modifier.width(8.dp))
-            Text(text = "Open Files", style = MaterialTheme.typography.titleLarge)
+            Text(text = buttonLabel, style = MaterialTheme.typography.titleLarge)
         }
-        if (filesUnavailable) {
+        if (failed) {
             Spacer(modifier = Modifier.height(16.dp))
             Text(
-                text = "This head unit's Files app couldn't be opened. Install the bridge with adb instead.",
+                text = failureText,
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.error,
             )

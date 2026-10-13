@@ -810,6 +810,9 @@ class MainActivity : ComponentActivity() {
             tag = "MAIN",
         )
         reinitializeForDisplayMode(currentDisplayMode)
+        // [211] The bridge binding is process-wide, so the rebuild alone kept it. The old manager
+        // has released its transport by now; the new one binds afresh.
+        CarlinkBridge.reset(this)
     }
 
     /**

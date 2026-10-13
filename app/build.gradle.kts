@@ -27,7 +27,7 @@ android {
         applicationId = "com.enigy.carlink2"
         minSdk = 29
         targetSdk = 36
-        versionCode = 210
+        versionCode = 211
         versionName = "1.0.0"
 
 //###############################################

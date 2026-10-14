@@ -22,8 +22,7 @@ fork, so maneuver icons show on the HUD. Details and diagnostics:
 
 ## Install
 
-1. If the old sideloaded Carlink (`com.enigy.carlink`) is installed, uninstall it first. It claims
-   the same HUD icon provider, and Android won't install the bridge alongside it.
+1. If the old Carlink is installed, uninstall it first. It won't work properly with the new split bridge architecture.
 2. Install Carlink2 from Google Play. <!-- TODO: Play link -->
 3. Copy [`app/carlink2_bridge.apk`](app/carlink2_bridge.apk) (bridge 1.0.2) to a USB drive.
    SHA-256: `aff977cc82806016a1401d182cc0f0ce88c711c16aca66ef7c4db613e879079c`
@@ -76,7 +75,7 @@ Numbers in brackets are entries in [documents/revisions.txt](documents/revisions
 
 > [!IMPORTANT]
 > My 2025 GMC Sierra with HUD (gminfo3.7, Intel, AAOS) is the target platform and my only hardware
-> for testing. My phone is an iPhone, so CarPlay has had the most tuning.
+> for testing. I only have an iPhone, so CarPlay has the most tuning.
 
 > [!WARNING]
 > Compatibility with anything else is **untested**. Carlink2 is tuned for video and audio performance

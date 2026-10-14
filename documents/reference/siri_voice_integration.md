@@ -23,7 +23,10 @@ request cannot be sent.
 
 This depends on the vehicle allowing Carlink to be selected as its default
 assistant and routing the steering wheel's short press to that assistant. Long
-press behavior may remain owned by GM's projection or Bluetooth integration.
+press behavior may remain owned by GM's projection or Bluetooth integration.  To enable Carlink2 as the
+default Digital (Voice) Assistant, go into the Truck's AAOS Settings > Apps > Default Apps > Digital Assistant app.
+Select 'Carlink2' and save.  Now when you short press the steering wheel's voice button,
+it will launch Siri.
 
 ## Carlink2 port ([217], [218])
 
@@ -37,8 +40,3 @@ in the car's settings turns it on, and choosing another assistant turns it off. 
 a Voice Button setting that disabled the assistant components; [218] removed it, and Carlink2
 re-enables those components at startup if that setting had switched them off.
 
-**Showing up in the car's assistant list ([219]).** Android only offers an app as the default
-assistant when its voice interaction service declares `android:supportsAssist="true"` in
-`res/xml/siri_voice_interaction.xml` (the ASSISTANT role needs a service that "is capable of
-handling the assist action"). [217] shipped `false`, from upstream `6da7265`, so Carlink2 Siri never
-appeared in the truck's digital assistant menu; ericyanush's follow-up `aec6b3d` sets it to `true`.

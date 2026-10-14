@@ -167,19 +167,6 @@ class CarlinkManager(
     // Config can be updated when actual surface dimensions are known
     private var config: AdapterConfig = initialConfig
 
-    /** The WiFi/BT name the adapter is configured to advertise — what a phone connects to. */
-    val adapterName: String get() = config.boxName
-
-    /**
-     * Latest user-facing phase string handed to [setStatusText] ("Searching for adapter...",
-     * "Streaming", "Reconnecting (2/5)...", ...). A pollable mirror of
-     * [Callback.onStatusTextChanged] for observers that cannot own the single-slot [callback]
-     * (the settings dashboard's SessionSnapshot). Written on whichever thread drives the state
-     * machine and read on the main thread, so @Volatile like [currentPhoneType]/[currentWifi].
-     */
-    @Volatile var statusText: String = ""
-        private set
-
     companion object {
         /**
          * Serializes [start] across ALL CarlinkManager instances in the process. Two starts on
@@ -2555,7 +2542,6 @@ class CarlinkManager(
         // Released: the MediaSession is app-scope and shared with the replacement manager —
         // a straggler's status text must not overwrite its placeholder.
         if (released) return
-        statusText = text
         callback?.onStatusTextChanged(text)
         // Mirror status text to MediaSession placeholder so cluster, cardview, and
         // CarMediaApp surfaces all show the same user-facing state the main app UI

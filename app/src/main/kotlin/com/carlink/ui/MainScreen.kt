@@ -1,19 +1,47 @@
 package com.carlink.ui
 
 import android.view.MotionEvent
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredHeight
 import androidx.compose.foundation.layout.requiredWidth
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.RestartAlt
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -22,83 +50,75 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.carlink.BuildConfig
 import com.carlink.CarlinkManager
+import com.carlink.R
 import com.carlink.logging.logDebug
 import com.carlink.logging.logInfo
 import com.carlink.protocol.MessageSerializer
 import com.carlink.protocol.MultiTouchAction
 import com.carlink.protocol.PhoneType
+import com.carlink.usb.CarlinkBridge
+import com.carlink.ui.components.BridgeNotStartingPanel
+import com.carlink.ui.components.BridgeSetupPanel
+import com.carlink.ui.components.ForestFogEffect
+import com.carlink.ui.components.LoadingSpinner
 import com.carlink.ui.components.VideoSurface
-import com.carlink.ui.components.VideoSurfaceState
 import com.carlink.ui.components.rememberVideoSurfaceState
+import com.carlink.ui.settings.AdapterConfigPreference
+import com.carlink.ui.settings.BackgroundLogoConfig
 import com.carlink.ui.settings.DisplayMode
+import com.carlink.ui.theme.AutomotiveDimens
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
-/**
- * Projection screen: the H.264 video SurfaceView (HWC overlay) plus touch forwarding, and the
- * place where [CarlinkManager] is initialized against the Surface and started.
- *
- * This composable has NO idle presentation of its own any more. Since the dashboard became the
- * app's base UI (see CarlinkApp in MainActivity.kt), this screen is only ever visible while a
- * session is STREAMING; whenever it isn't, the dashboard is drawn over it. The former loading
- * overlay (spinner, status text, Settings / Reset Device buttons) was dead under that model and
- * was removed — its two actions live on the dashboard (the top-level "Reset Device" button) and
- * the dashboard IS the settings UI. The loading scenery and the bridge setup panels moved to
- * the dashboard too (SettingsScreen).
- *
- * MainScreen must stay composed for the whole life of its [carlinkManager] regardless of
- * visibility: disposing it destroys the Surface under a running MediaCodec ("BufferQueue has
- * been abandoned").
- *
- * @param onConnectionStateChanged Mirrors every [CarlinkManager.Callback.onStateChanged] to the
- *   caller, which decides whether this screen is shown. May be invoked off the main thread
- *   (Compose snapshot-state writes are safe there; see CarlinkManager.setState).
- * @param onHostUiRequested The phone sent REQUEST_HOST_UI (CarPlay's "car" button / AA's exit to
- *   host). The caller reveals the dashboard; the session stays alive underneath.
- * @param onPhoneConnected Fired once each time the phone transitions to connected
- *   (DEVICE_CONNECTED/STREAMING). MainActivity uses it to refresh the cluster binding so each
- *   trip gets a fresh session.
- * @param onBridgeNotStartingChanged [211] The bridge is installed but not answering; the
- *   dashboard shows its "bridge isn't starting" panel while true.
- */
-@Suppress("CyclomaticComplexMethod", "LongMethod", "LongParameterList")
+/** Main projection screen displaying H.264 video via SurfaceView (HWC overlay) with touch forwarding. */
 @Composable
 fun MainScreen(
     carlinkManager: CarlinkManager,
     displayMode: DisplayMode,
-    onConnectionStateChanged: (CarlinkManager.State) -> Unit = {},
-    onHostUiRequested: () -> Unit = {},
+    onNavigateToSettings: () -> Unit,
+    onResetConnection: (() -> Unit)? = null,
+    // Fired once each time the phone transitions to connected (DEVICE_CONNECTED/STREAMING).
+    // MainActivity uses it to refresh the cluster binding so each trip gets a fresh session.
     onPhoneConnected: () -> Unit = {},
-    onBridgeNotStartingChanged: (Boolean) -> Unit = {},
-    // Hoistable so CarlinkApp can PixelCopy the live surface for the dashboard backdrop
-    // (see SurfaceSnapshot.kt). Defaults to a local holder for callers that don't need it.
-    surfaceState: VideoSurfaceState = rememberVideoSurfaceState(),
+    // [210] False shows the bridge setup panel in place of the status text. onOpenFiles starts
+    // the built-in Files app and returns false if it couldn't.
+    bridgeInstalled: Boolean = true,
+    onOpenFiles: () -> Boolean = { false },
 ) {
-    // The CarlinkManager.Callback below is built inside a LaunchedEffect and closes over
-    // whatever lambdas were current when the effect (re)launched. Route through
-    // rememberUpdatedState so a caller passing a fresh lambda on recomposition is honoured.
-    val currentOnConnectionStateChanged by rememberUpdatedState(onConnectionStateChanged)
-    val currentOnHostUiRequested by rememberUpdatedState(onHostUiRequested)
-    val currentOnPhoneConnected by rememberUpdatedState(onPhoneConnected)
-    val currentOnBridgeNotStartingChanged by rememberUpdatedState(onBridgeNotStartingChanged)
-
+    val scope = rememberCoroutineScope()
     // Key state on carlinkManager identity — when manager is replaced (display mode reinit),
     // all session-scoped state resets automatically. This prevents stale callbacks, flags,
     // or touch state from the old manager leaking into the new session.
     var connectionState by remember(carlinkManager) { mutableStateOf(CarlinkManager.State.DISCONNECTED) }
+    var statusText by remember(carlinkManager) { mutableStateOf("Connect Adapter") }
+    var isResetting by remember(carlinkManager) { mutableStateOf(false) }
+    val surfaceState = rememberVideoSurfaceState()
     var isAndroidAuto by remember(carlinkManager) { mutableStateOf(false) }
+    var bridgeNotStarting by remember(carlinkManager) { mutableStateOf(false) } // [211]
     var aaCropParams by remember(carlinkManager) { mutableStateOf<CarlinkManager.AaCropParams?>(null) }
     // Fire onPhoneConnected once per connection (re-armed on disconnect) so the cluster binding is
     // refreshed at the start of each trip — not on every state tick.
     var connectNotified by remember(carlinkManager) { mutableStateOf(false) }
+    // [216] Settings → Adapter Configuration → Visual → Background Logo; switches as soon as it's saved.
+    val adapterConfig = AdapterConfigPreference.getInstance(LocalContext.current)
+    val backgroundLogo by adapterConfig.backgroundLogoFlow.collectAsStateWithLifecycle(
+        initialValue = adapterConfig.getBackgroundLogoSync(),
+    )
 
     LaunchedEffect(connectionState) {
         logInfo("[UI_STATE] MainScreen connection state: $connectionState", tag = "UI")
@@ -106,17 +126,16 @@ fun MainScreen(
             connectionState == CarlinkManager.State.STREAMING
         if (connected && !connectNotified) {
             connectNotified = true
-            currentOnPhoneConnected()
+            onPhoneConnected()
         } else if (connectionState == CarlinkManager.State.DISCONNECTED) {
             connectNotified = false
         }
     }
 
-    // Forward the AAOS day/night state to CarPlay. Fires when a session reaches STREAMING (initial
-    // sync) and whenever the system theme toggles mid-session (isSystemInDarkTheme recomposes
-    // because MainActivity handles the uiMode config change without recreating).
-    // systemNight drives ONLY the phone-bound night-mode command — it must never feed
-    // CarlinkTheme(darkTheme = ...); this app's own theme stays permanently dark (see Theme.kt).
+    // Forward the AAOS day/night state to CarPlay (upstream [160]). Fires when a session reaches
+    // STREAMING (initial sync) and whenever the system theme toggles mid-session
+    // (isSystemInDarkTheme recomposes because MainActivity handles the uiMode config change
+    // without recreating). Drives ONLY the phone-bound night-mode command.
     val systemNight = isSystemInDarkTheme()
     LaunchedEffect(systemNight, connectionState) {
         if (connectionState == CarlinkManager.State.STREAMING) {
@@ -164,23 +183,18 @@ fun MainScreen(
                     object : CarlinkManager.Callback {
                         override fun onStateChanged(state: CarlinkManager.State) {
                             connectionState = state
-                            currentOnConnectionStateChanged(state)
                         }
 
                         override fun onStatusTextChanged(text: String) {
-                            // No on-screen consumer since the loading overlay went away (the
-                            // dashboard renders connection state from SessionSnapshot). The
-                            // manager does not log these itself — it only mirrors them into the
-                            // MediaSession placeholder — so keep the trail in the UI log.
-                            logInfo("[UI_STATE] Adapter status: $text", tag = "UI")
+                            statusText = text
                         }
 
                         override fun onHostUIPressed() {
-                            currentOnHostUiRequested()
+                            onNavigateToSettings()
                         }
 
                         override fun onBridgeNotStartingChanged(notStarting: Boolean) {
-                            currentOnBridgeNotStartingChanged(notStarting)
+                            bridgeNotStarting = notStarting
                         }
 
                         override fun onPhoneTypeChanged(phoneType: PhoneType) {
@@ -206,12 +220,26 @@ fun MainScreen(
                 // is keyed on surface/containerSize, which the cluster CarAppActivity churns at
                 // startup; running the suspending start() here would let that churn cancel the USB
                 // permission request mid-flight and strand the app at "Adapter found, opening…"
-                // (v163 bug). connect() runs start() on Dispatchers.IO, survives surface churn and
-                // self-chains the reconnect loop.
+                // (v163 bug). connect() survives surface churn and self-chains the reconnect loop.
                 carlinkManager.connect()
             }
         }
     }
+
+    // Hold the loading overlay for 2.5 extra seconds after streaming begins so the
+    // video buffer has time to fill before the 1-second fade-out starts.
+    // Without the delay the first frame can be black or incomplete, making the
+    // transition look like a flash rather than a smooth dissolve into live video.
+    var isLoading by remember(carlinkManager) { mutableStateOf(true) }
+    LaunchedEffect(connectionState) {
+        if (connectionState == CarlinkManager.State.STREAMING) {
+            delay(2500L)
+            isLoading = false
+        } else {
+            isLoading = true
+        }
+    }
+    val colorScheme = MaterialTheme.colorScheme
 
     val baseModifier = Modifier.fillMaxSize().background(Color.Black)
     val boxModifier =
@@ -286,7 +314,7 @@ fun MainScreen(
                 }
 
             // Key the VideoSurface on (manager identity, displayMode) so any reinit
-            // path (display-mode change, resolution change, dashboard Reset Device via the
+            // path (display-mode change, resolution change, Reset Connection via the
             // manager-rebuild path) drops the AndroidView composition slot, disposing
             // the old VideoSurfaceView and releasing its HWC overlay plane. A fresh
             // SurfaceView is then inflated against the current window rect — the only
@@ -344,6 +372,178 @@ fun MainScreen(
             )
             } // end key(carlinkManager, displayMode)
         }
+
+        // Loading overlay — appears instantly, fades out over 1 s when streaming begins.
+        // AnimatedVisibility keeps the composable in the tree during the exit animation so
+        // the rings keep rendering while the video surface cross-fades through underneath.
+        AnimatedVisibility(
+            visible = isLoading,
+            enter = EnterTransition.None,                                  // instant appear
+            exit  = fadeOut(animationSpec = tween(durationMillis = 1000)), // 1 s fade-out
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            // Inner Box provides BoxScope so the button Row can use .align(TopStart)
+            Box(modifier = Modifier.fillMaxSize()) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center,
+            ) {
+                // Static mountain background fills the overlay (behind the sparkles + content).
+                // ContentScale.Crop scales to fill the 2400x960 area and centre-crops any overflow
+                // (the image is ~2.49:1, so almost nothing is cropped) — no stretching.
+                // [216] Same scene for both logos (Chevrolet: 2000x805, also ~2.49:1).
+                Image(
+                    painter =
+                        painterResource(
+                            id =
+                                when (backgroundLogo) {
+                                    BackgroundLogoConfig.GMC -> R.drawable.loading_bg
+                                    BackgroundLogoConfig.CHEVROLET -> R.drawable.loading_bg_chevrolet
+                                },
+                        ),
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+
+                // Drifting fog over the forest (bottom ~20%), in place of the sparkle particles.
+                ForestFogEffect()
+
+                if (!bridgeInstalled) {
+                    // [210] Nothing else on this screen can work until the bridge is installed.
+                    BridgeSetupPanel(onOpenFiles = onOpenFiles)
+                } else if (bridgeNotStarting) {
+                    // [211] Installed but not answering.
+                    val context = LocalContext.current
+                    BridgeNotStartingPanel(onOpenAppInfo = { CarlinkBridge.openAppInfo(context) })
+                } else {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                        // Shift the icon + status text down ~1/2 inch (80dp = 1/2" at 160dp/in) from
+                        // dead-centre so it sits lower over the image.
+                        modifier = Modifier.offset(y = 80.dp),
+                    ) {
+                        Image(
+                            painter = painterResource(id = R.drawable.ic_phone_projection),
+                            contentDescription = "Carlink",
+                            modifier = Modifier.height(220.dp),
+                        )
+
+                        Spacer(modifier = Modifier.height(24.dp))
+
+                        Text(
+                            text = "[ $statusText ]",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = Color(0xFFDDE4E5), // Fixed light color for dark overlay
+                        )
+                    }
+                }
+            }
+
+            Row(
+                modifier =
+                    Modifier
+                        .align(Alignment.TopStart)
+                        .windowInsetsPadding(WindowInsets.systemBars)
+                        .windowInsetsPadding(WindowInsets.displayCutout)
+                        .padding(24.dp),
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                FilledTonalButton(
+                    onClick = { onNavigateToSettings() },
+                    modifier = Modifier.height(AutomotiveDimens.ButtonMinHeight),
+                    contentPadding =
+                        PaddingValues(
+                            horizontal = AutomotiveDimens.ButtonPaddingHorizontal,
+                            vertical = AutomotiveDimens.ButtonPaddingVertical,
+                        ),
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Settings,
+                        contentDescription = "Settings",
+                        modifier = Modifier.size(AutomotiveDimens.IconSize),
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Settings",
+                        style = MaterialTheme.typography.titleLarge,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    )
+                }
+
+                FilledTonalButton(
+                    onClick = {
+                        if (!isResetting) {
+                            isResetting = true
+                            // Prefer the Activity-level reset when wired: it reboots the adapter
+                            // ([209]), recreates the SurfaceView against fresh WindowMetrics and
+                            // renegotiates Open() with current dims — deterministic repair.
+                            // Fall back to in-manager restart() for callers that don't plumb
+                            // the callback (e.g. tests/previews).
+                            val reset = onResetConnection
+                            if (reset != null) {
+                                reset()
+                                // Activity releases the old manager; Compose key(carlinkManager, ...)
+                                // will drop this subtree shortly. Clear the spinner promptly so
+                                // the UI doesn't flash a stale "resetting" state during teardown.
+                                isResetting = false
+                            } else {
+                                scope.launch {
+                                    try {
+                                        carlinkManager.restart()
+                                    } finally {
+                                        isResetting = false
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    enabled = !isResetting,
+                    modifier = Modifier.height(AutomotiveDimens.ButtonMinHeight),
+                    colors =
+                        ButtonDefaults.filledTonalButtonColors(
+                            containerColor = colorScheme.errorContainer,
+                            contentColor = colorScheme.onErrorContainer,
+                        ),
+                    contentPadding =
+                        PaddingValues(
+                            horizontal = AutomotiveDimens.ButtonPaddingHorizontal,
+                            vertical = AutomotiveDimens.ButtonPaddingVertical,
+                        ),
+                ) {
+                    AnimatedContent(
+                        targetState = isResetting,
+                        transitionSpec = {
+                            (fadeIn() + scaleIn()).togetherWith(fadeOut() + scaleOut())
+                        },
+                        label = "resetIconTransition",
+                    ) { resetting ->
+                        if (resetting) {
+                            LoadingSpinner(
+                                size = AutomotiveDimens.IconSize,
+                                color = colorScheme.onErrorContainer,
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.RestartAlt,
+                                contentDescription = "Reset Device",
+                                modifier = Modifier.size(AutomotiveDimens.IconSize),
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Reset Device",
+                        style = MaterialTheme.typography.titleLarge,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            } // end inner Box (BoxScope for button Row)
+        } // end AnimatedVisibility
     }
 }
 
@@ -364,11 +564,7 @@ private data class TouchPoint(
  *
  * AA:     type 0x05, 0..10000 ints  (CarlinkManager converts 0..1 → 0..10000)
  * CarPlay: type 0x17, 0..1 floats   (unchanged)
- *
- * Multitouch -> adapter touch protocol translation on the input path; params are the surface/
- * container geometry, the condition the zero-size guard, nesting the per-pointer handling.
  */
-@Suppress("CyclomaticComplexMethod", "LongParameterList", "NestedBlockDepth", "ComplexCondition")
 private fun handleTouchEvent(
     event: MotionEvent,
     activeTouches: MutableMap<Int, TouchPoint>,

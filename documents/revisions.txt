@@ -1743,6 +1743,17 @@
      navigation/Iap2*Parser.kt + compose/ManeuverComposer.kt (suppressions only), protocol/AdapterDriver.kt,
      audio/DualStreamAudioManager.kt, build.gradle.kts, app/build.gradle.kts, plus upstream's auto-merged files.
 
+[221] :: Back out upstream's [161] dashboard; the main screen and settings are Carlink2's again (as of [219]).
+   - Restored from [219]: MainScreen (loading scene, Background Logo, status text, bridge panels, Settings and Reset
+     Device buttons), SettingsScreen with its tabs (PhonesTab, SettingsTab), AdapterConfigurationDialog, and
+     CarlinkApp's settings overlay that slides in over the video. README and screenshots/MainPage.png as before.
+   - Removed [161]'s files: ControlDialogs, DashboardLayout, KnownDevicesList, SessionSnapshot, SurfaceSnapshot,
+     DebugProps, CarlinkManager.statusText/adapterName, and the Dashboard-* screenshots.
+   - Kept from the [220] merge: [158] decoder-probe ANR fix and race guard, [159]/[160] display fixes, CarPlay
+     night-mode command (now from the restored MainScreen), upstream's low-rate LoadingSpinner, toolchain update.
+   - Affected: MainActivity.kt, CarlinkManager.kt, ui/MainScreen.kt, ui/SettingsScreen.kt, ui/settings/*, README.md,
+     app/build.gradle.kts.
+
 ==== Upstream lvalen91/carlink revisions [145]-[161], merged into this fork in [220]. Upstream numbers its
 ==== revisions separately from this fork; the entries below are upstream's own, kept verbatim. ====
 

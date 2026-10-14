@@ -100,7 +100,10 @@ object MicFormats {
  * - Capture thread writes to ring buffer (single writer)
  * - USB thread reads from ring buffer (single reader)
  * - Start/stop/configure called from main thread
+ *
+ * Mic capture lifecycle + AudioRecord/encoder plumbing; function count is the surface of one unit.
  */
+@Suppress("TooManyFunctions")
 class MicrophoneCaptureManager(
     private val context: Context,
     private val logCallback: LogCallback,
@@ -150,7 +153,10 @@ class MicrophoneCaptureManager(
      *  - 6 = enhanced voice (24kHz mono): firmware accepts the format but does not
      *        forward the audio downstream — dead in practice.
      *  - 7 = stereo voice (16kHz stereo): same — firmware does not forward stereo mic.
+     *
+     * AudioRecord bring-up with guard-clause early-returns for each failure mode; returns reflect them.
      */
+    @Suppress("LongMethod", "ReturnCount")
     fun start(decodeType: Int = 5): Boolean {
         synchronized(lock) {
             if (isRunning.get()) {
@@ -495,6 +501,8 @@ class MicrophoneCaptureManager(
         private val chunkSize = (format.sampleRate * format.bytesPerSample * captureChunkMs) / 1000
         private val tempBuffer = ByteArray(chunkSize)
 
+        // Real-time mic read loop; loop jumps/nesting are the capture/encode pacing logic.
+        @Suppress("CyclomaticComplexMethod", "NestedBlockDepth", "LoopWithTooManyJumpStatements")
         override fun run() {
             Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
             log("[MIC] Capture thread started with URGENT_AUDIO priority, chunk=${chunkSize}B")

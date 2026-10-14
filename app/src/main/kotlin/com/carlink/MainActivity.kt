@@ -29,10 +29,9 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
@@ -43,6 +42,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -65,6 +66,9 @@ import com.carlink.protocol.KnownDevices
 import com.carlink.ui.MainScreen
 import com.carlink.ui.BridgeSetupNotification
 import com.carlink.ui.SettingsScreen
+import com.carlink.ui.components.captureSurfaceBitmap
+import com.carlink.ui.components.rememberVideoSurfaceState
+import com.carlink.util.DebugProps
 import com.carlink.ui.settings.AdapterConfigPreference
 import com.carlink.ui.settings.DisplayMode
 import com.carlink.ui.settings.DisplayModePreference
@@ -75,6 +79,7 @@ import com.carlink.usb.CarlinkBridge
 import com.enigy.carlink2.bridge.BridgeContract
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.nio.ByteBuffer
@@ -101,9 +106,13 @@ import java.nio.ByteOrder
  *  - Cluster binding lifecycle: [launchCarAppActivity] starts the Templates Host →
  *    cluster chain, [restartClusterBinding] tears it down and re-establishes.
  *  - Compose UI host: the top-level [CarlinkApp] composable keeps [MainScreen]
- *    continuously composed (to preserve the VideoSurface / HWC plane) and slides
- *    [SettingsScreen] on top via AnimatedVisibility rather than replacing it.
+ *    continuously composed (to preserve the VideoSurface / HWC plane) underneath the
+ *    dashboard ([SettingsScreen]), which is the base UI and is removed only while a
+ *    session is STREAMING so the video shows through.
+ *
+ * Single LAUNCHER activity owning USB/video/audio/surface wiring; function count is that surface.
  */
+@Suppress("TooManyFunctions")
 class MainActivity : ComponentActivity() {
     // Nullable to prevent UninitializedPropertyAccessException if Activity
     // is destroyed before initialization completes (e.g., low memory kill)
@@ -164,6 +173,11 @@ class MainActivity : ComponentActivity() {
     // Pending reinit handler — tracked for cancellation on rapid display mode changes
     private var pendingReinitRunnable: Runnable? = null
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    // Main-thread only. Bumped by every initializeCarlinkManager() pass and by every teardown
+    // (reinitializeForDisplayMode, onDestroy). The decoder probe completes asynchronously; its
+    // result builds a CarlinkManager only if the generation is unchanged since it was started.
+    private var managerInitGeneration = 0
 
     // Permission launchers — chained: mic callback triggers location request
     private val locationPermissionLauncher =
@@ -336,8 +350,9 @@ class MainActivity : ComponentActivity() {
         // insets exactly ONCE in initializeCarlinkManager()'s when-branch, not from a clipped
         // bounds. (Prior comment claimed bounds reflected a post-clip 2400x788 rect — false;
         // that would double-count with the inset subtraction and yield 616.)
-        // Compose renders `if (manager != null)` while we wait, so the UI boots with
-        // the loading overlay and swaps in as soon as the manager is ready.
+        // Compose renders `if (manager != null)` while we wait, so the UI boots on the black
+        // root surface and the dashboard appears as soon as the manager is ready. The manager
+        // itself is created asynchronously, after DecoderCompat's off-main-thread probe answers.
         window.decorView.post {
             if (!isDestroyed && !isFinishing) {
                 initializeCarlinkManager()
@@ -386,7 +401,13 @@ class MainActivity : ComponentActivity() {
             val manager = carlinkManagerState.value
             val displayMode = displayModeState.value
             CarlinkTheme {
-                Surface(modifier = Modifier.fillMaxSize()) {
+                // Explicit black: don't fall back to MaterialTheme.colorScheme.surface here.
+                // CarlinkTheme is permanently dark now (see Theme.kt), but this root layer stays
+                // pinned to a literal color rather than the theme's surface token, so it can't
+                // regress to a light paint here even if the theme's resolution logic changes
+                // again later — this was the exact leak site history (now-removed LightColorScheme
+                // bled through here when isSystemInDarkTheme() read false on this hardware).
+                Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
                     if (manager != null) {
                         CarlinkApp(
                             carlinkManager = manager,
@@ -490,6 +511,9 @@ class MainActivity : ComponentActivity() {
         // Stop the cluster-session watchdog
         mainHandler.removeCallbacks(clusterWatchdogRunnable)
 
+        // Drop any decoder-probe result still in flight (isDestroyed also guards it).
+        managerInitGeneration++
+
         // Unregister USB detachment receiver
         unregisterUsbDetachReceiver()
 
@@ -552,6 +576,8 @@ class MainActivity : ComponentActivity() {
         logInfo("[LOGGING] Debug logging: ${if (isDebugBuild) "ENABLED" else "DISABLED (release build)"}", tag = "MAIN")
     }
 
+    // CarlinkManager bring-up + callback wiring; one ordered setup path, refactoring risks startup.
+    @Suppress("CyclomaticComplexMethod", "LongMethod")
     private fun initializeCarlinkManager() {
         // Get window metrics to determine USABLE area (excluding system UI).
         // WindowMetricsCompat falls back to Display.getRealMetrics + WindowInsetsCompat
@@ -564,6 +590,10 @@ class MainActivity : ComponentActivity() {
             windowInsets.getInsetsIgnoringVisibility(WindowInsetsCompat.Type.systemBars())
         val cutoutInsets =
             windowInsets.getInsetsIgnoringVisibility(WindowInsetsCompat.Type.displayCutout())
+        val chromeInsets =
+            windowInsets.getInsetsIgnoringVisibility(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout(),
+            )
 
         // Compute video resolution and SafeArea insets per display mode
         val videoWidth: Int
@@ -575,11 +605,11 @@ class MainActivity : ComponentActivity() {
 
         when (currentDisplayMode) {
             DisplayMode.SYSTEM_UI_VISIBLE -> {
-                // System bars + cutouts both reduce video area. No SafeArea needed.
-                videoWidth = bounds.width() - systemBarInsets.left - systemBarInsets.right -
-                    cutoutInsets.left - cutoutInsets.right
-                videoHeight = bounds.height() - systemBarInsets.top - systemBarInsets.bottom -
-                    cutoutInsets.top - cutoutInsets.bottom
+                // System bars + cutouts both reduce video area; use the union (not the sum) of the two
+                // inset types, since on hardware where the cutout sits inside the status bar's footprint,
+                // summing them double-counts the same chrome region. No SafeArea needed.
+                videoWidth = bounds.width() - chromeInsets.left - chromeInsets.right
+                videoHeight = bounds.height() - chromeInsets.top - chromeInsets.bottom
                 safeInsetTop = 0
                 safeInsetBottom = 0
                 safeInsetLeft = 0
@@ -600,7 +630,9 @@ class MainActivity : ComponentActivity() {
                 // Status bar visible (subtract from video), nav bar hidden (cutout exposed bottom/sides)
                 videoWidth = bounds.width()
                 videoHeight = bounds.height() - systemBarInsets.top
-                safeInsetTop = 0 // status bar covers top
+                // Video starts below the status bar; only the part of the top cutout that extends
+                // past it is exposed. Status bar does not always cover the cutout (ct5_base: T:115, bar 0).
+                safeInsetTop = maxOf(0, cutoutInsets.top - systemBarInsets.top)
                 safeInsetBottom = cutoutInsets.bottom
                 safeInsetLeft = cutoutInsets.left
                 safeInsetRight = cutoutInsets.right
@@ -649,8 +681,8 @@ class MainActivity : ComponentActivity() {
                 null
             }
 
-        // Platform-specific overrides. PlatformDetector.detect is cheap (Build props + one
-        // MediaCodecList scan); CarlinkManager.initialize re-detects but that's idempotent.
+        // Platform-specific overrides. PlatformDetector.detect caches its MediaCodecList scan
+        // and sample-rate read per process; CarlinkManager.initialize re-detects from cache.
         // gminfo37 (and the AAOS emulator for development parity): hide the CarPlay OEM
         // "Exit" icon — GM AAOS has its own back-nav; the OEM tile collides visually.
         // Other platforms keep the OEM icon visible (existing factory behavior). Wired into
@@ -668,7 +700,7 @@ class MainActivity : ComponentActivity() {
         // Apply video resolution preference (must be before ViewArea/SafeArea construction)
         // AUTO = use detected usable dimensions, otherwise use user-selected resolution
         val userSelectedResolution = !userConfig.videoResolution.isAuto
-        val (configWidth, configHeight) =
+        val (requestedWidth, requestedHeight) =
             if (userConfig.videoResolution.isAuto) {
                 Pair(evenWidth, evenHeight)
             } else {
@@ -676,100 +708,148 @@ class MainActivity : ComponentActivity() {
                 // Note: Surface size remains the actual display size for touch normalization
                 Pair(userConfig.videoResolution.width, userConfig.videoResolution.height)
             }
+        // Clamp to a size the local H.264 decoder can actually start. Identity on any device
+        // whose decoder handles the requested size (gminfo37, emulator); see DecoderCompat for
+        // the vendor-driver case where advertised capabilities exceed the real limit. Applies
+        // to explicit picks too, since the picklist offers the raw display size.
+        //
+        // The probe runs on its own thread: it is a chain of synchronous, uninterruptible
+        // binder calls into the codec HAL, and a slow or wedged decoder (cold ignition boot,
+        // emulator without video hardware) blocked this main-thread tick long enough to miss
+        // the window-focus ACK and ANR. The manager is built when the result is posted back;
+        // Compose shows the loading overlay until then (carlinkManagerState stays null).
+        // On timeout the requested size is used unchanged, the same as an inconclusive probe.
+        //
+        // completeInit captures this pass's metrics/config. It runs only if no newer
+        // initialize/teardown happened meanwhile (generation check), so a late result can
+        // never create a second manager or one built from stale display-mode metrics.
+        val generation = ++managerInitGeneration
 
-        // Build binary ViewArea/SafeArea data using the configured resolution.
-        // ViewArea/SafeArea must match OPEN message dimensions (safeArea ⊆ viewArea ⊆ display).
-        val viewAreaData = buildViewAreaData(configWidth, configHeight)
-        val safeAreaData =
-            if (userSelectedResolution) {
-                // Scale cutout insets from display coordinates to custom resolution coordinates.
-                // Linear scaling assumes cutouts are rectangular window-edge margins (true on
-                // AAOS displays we've seen). Non-uniform X/Y scaling is OK here because cutout
-                // insets are axis-aligned.
-                val scaleX = configWidth.toFloat() / evenWidth.toFloat()
-                val scaleY = configHeight.toFloat() / evenHeight.toFloat()
-                buildSafeAreaData(
-                    configWidth,
-                    configHeight,
-                    (safeInsetTop * scaleY).toInt(),
-                    (safeInsetBottom * scaleY).toInt(),
-                    (safeInsetLeft * scaleX).toInt(),
-                    (safeInsetRight * scaleX).toInt(),
+        fun completeInit(
+            configWidth: Int,
+            configHeight: Int,
+        ) {
+            val decoderClamped = configWidth != requestedWidth || configHeight != requestedHeight
+            // Config intentionally differs from the surface when the user pinned a resolution OR
+            // the decoder clamp shrank it. Both need inset scaling and both must suppress the
+            // surface-vs-codec divergence WARN in CarlinkManager.
+            val configPinned = userSelectedResolution || decoderClamped
+
+            // Build binary ViewArea/SafeArea data using the configured resolution.
+            // ViewArea/SafeArea must match OPEN message dimensions (safeArea ⊆ viewArea ⊆ display).
+            val viewAreaData = buildViewAreaData(configWidth, configHeight)
+            val safeAreaData =
+                if (configPinned) {
+                    // Scale cutout insets from display coordinates to custom resolution coordinates.
+                    // Linear scaling assumes cutouts are rectangular window-edge margins (true on
+                    // AAOS displays we've seen). Non-uniform X/Y scaling is OK here because cutout
+                    // insets are axis-aligned.
+                    val scaleX = configWidth.toFloat() / evenWidth.toFloat()
+                    val scaleY = configHeight.toFloat() / evenHeight.toFloat()
+                    buildSafeAreaData(
+                        configWidth,
+                        configHeight,
+                        (safeInsetTop * scaleY).toInt(),
+                        (safeInsetBottom * scaleY).toInt(),
+                        (safeInsetLeft * scaleX).toInt(),
+                        (safeInsetRight * scaleX).toInt(),
+                    )
+                } else {
+                    buildSafeAreaData(configWidth, configHeight, safeInsetTop, safeInsetBottom, safeInsetLeft, safeInsetRight)
+                }
+
+            // Map user config enums to AdapterConfig values
+            val micType =
+                when (userConfig.micSource) {
+                    com.carlink.ui.settings.MicSourceConfig.APP -> "os"
+                    com.carlink.ui.settings.MicSourceConfig.PHONE -> "box"
+                }
+            val wifiType =
+                when (userConfig.wifiBand) {
+                    com.carlink.ui.settings.WiFiBandConfig.BAND_5GHZ -> "5ghz"
+                    com.carlink.ui.settings.WiFiBandConfig.BAND_24GHZ -> "24ghz"
+                }
+
+            val config =
+                AdapterConfig(
+                    width = configWidth,
+                    height = configHeight,
+                    fps = userConfig.fps.fps,
+                    dpi = dpi,
+                    // Config deliberately != surface: user pick (non-AUTO) or decoder clamp
+                    userSelectedResolution = configPinned,
+                    icon120Data = icon120,
+                    icon180Data = icon180,
+                    icon256Data = icon256,
+                    gpsFixScriptData = gpsFixScriptBytes,
+                    patchedIap2BinaryData = patchedIap2BinaryBytes,
+                    oemIconVisible = oemIconVisibleForPlatform,
+                    // User-configured audio transfer mode (false=adapter, true=bluetooth)
+                    audioTransferMode = userConfig.audioTransferMode,
+                    // Hardcoded to 48kHz - professional quality audio for GM AAOS
+                    sampleRate = 48000,
+                    // User-configured mic, wifi, call quality, and media delay
+                    micType = micType,
+                    wifiType = wifiType,
+                    callQuality = userConfig.callQuality.value,
+                    mediaDelay = userConfig.mediaDelay.delayMs,
+                    viewAreaData = viewAreaData,
+                    safeAreaData = safeAreaData,
+                    gpsForwarding = userConfig.gpsForwarding,
                 )
-            } else {
-                buildSafeAreaData(configWidth, configHeight, safeInsetTop, safeInsetBottom, safeInsetLeft, safeInsetRight)
-            }
 
-        // Map user config enums to AdapterConfig values
-        val micType =
-            when (userConfig.micSource) {
-                com.carlink.ui.settings.MicSourceConfig.APP -> "os"
-                com.carlink.ui.settings.MicSourceConfig.PHONE -> "box"
-            }
-        val wifiType =
-            when (userConfig.wifiBand) {
-                com.carlink.ui.settings.WiFiBandConfig.BAND_5GHZ -> "5ghz"
-                com.carlink.ui.settings.WiFiBandConfig.BAND_24GHZ -> "24ghz"
-            }
-
-        val config =
-            AdapterConfig(
-                width = configWidth,
-                height = configHeight,
-                fps = userConfig.fps.fps,
-                dpi = dpi,
-                // Mark if user explicitly selected a resolution (non-AUTO)
-                userSelectedResolution = userSelectedResolution,
-                icon120Data = icon120,
-                icon180Data = icon180,
-                icon256Data = icon256,
-                gpsFixScriptData = gpsFixScriptBytes,
-                patchedIap2BinaryData = patchedIap2BinaryBytes,
-                oemIconVisible = oemIconVisibleForPlatform,
-                // User-configured audio transfer mode (false=adapter, true=bluetooth)
-                audioTransferMode = userConfig.audioTransferMode,
-                // Hardcoded to 48kHz - professional quality audio for GM AAOS
-                sampleRate = 48000,
-                // User-configured mic, wifi, call quality, and media delay
-                micType = micType,
-                wifiType = wifiType,
-                callQuality = userConfig.callQuality.value,
-                mediaDelay = userConfig.mediaDelay.delayMs,
-                viewAreaData = viewAreaData,
-                safeAreaData = safeAreaData,
-                gpsForwarding = userConfig.gpsForwarding,
+            logInfo(
+                "[WINDOW] Bounds: ${bounds.width()}x${bounds.height()}, " +
+                    "Video: ${evenWidth}x$evenHeight, " +
+                    "Cutout: T:${cutoutInsets.top} B:${cutoutInsets.bottom} " +
+                    "L:${cutoutInsets.left} R:${cutoutInsets.right}, " +
+                    "DisplayMode: ${currentDisplayMode.name}",
+                tag = "MAIN",
+            )
+            logInfo(
+                "Display config: ${config.width}x${config.height}@${config.fps}fps, ${config.dpi}dpi" +
+                    (if (decoderClamped) " (decoder-clamped from ${requestedWidth}x$requestedHeight)" else ""),
+                tag = "MAIN",
+            )
+            logInfo(
+                "Icons loaded: $iconsLoaded " +
+                    "(120: ${icon120?.size ?: 0}B, 180: ${icon180?.size ?: 0}B, " +
+                    "256: ${icon256?.size ?: 0}B)",
+                tag = "MAIN",
+            )
+            logInfo(
+                "[ADAPTER_CONFIG] User config: " +
+                    "audioTransferMode=${if (userConfig.audioTransferMode) "bluetooth" else "adapter"}, " +
+                    "sampleRate=48000Hz (hardcoded), mic=$micType, wifi=$wifiType, " +
+                    "callQuality=${userConfig.callQuality.name}, " +
+                    "mediaDelay=${userConfig.mediaDelay.name}(${userConfig.mediaDelay.delayMs}ms), " +
+                    "resolution=${userConfig.videoResolution.toStorageString()} (adapter: ${configWidth}x$configHeight)",
+                tag = "MAIN",
             )
 
-        logInfo(
-            "[WINDOW] Bounds: ${bounds.width()}x${bounds.height()}, " +
-                "Video: ${evenWidth}x$evenHeight, " +
-                "Cutout: T:${cutoutInsets.top} B:${cutoutInsets.bottom} " +
-                "L:${cutoutInsets.left} R:${cutoutInsets.right}, " +
-                "DisplayMode: ${currentDisplayMode.name}",
-            tag = "MAIN",
-        )
-        logInfo("Display config: ${config.width}x${config.height}@${config.fps}fps, ${config.dpi}dpi", tag = "MAIN")
-        logInfo(
-            "Icons loaded: $iconsLoaded " +
-                "(120: ${icon120?.size ?: 0}B, 180: ${icon180?.size ?: 0}B, " +
-                "256: ${icon256?.size ?: 0}B)",
-            tag = "MAIN",
-        )
-        logInfo(
-            "[ADAPTER_CONFIG] User config: " +
-                "audioTransferMode=${if (userConfig.audioTransferMode) "bluetooth" else "adapter"}, " +
-                "sampleRate=48000Hz (hardcoded), mic=$micType, wifi=$wifiType, " +
-                "callQuality=${userConfig.callQuality.name}, " +
-                "mediaDelay=${userConfig.mediaDelay.name}(${userConfig.mediaDelay.delayMs}ms), " +
-                "resolution=${userConfig.videoResolution.toStorageString()} (adapter: ${configWidth}x$configHeight)",
-            tag = "MAIN",
-        )
+            applyAudioTransferModeToMediaSession(config.audioTransferMode)
 
-        applyAudioTransferModeToMediaSession(config.audioTransferMode)
+            carlinkManager = CarlinkManager(this, config, mediaSessionManager)
+            carlinkManagerState.value = carlinkManager
+            displayModeState.value = currentDisplayMode
+        }
 
-        carlinkManager = CarlinkManager(this, config, mediaSessionManager)
-        carlinkManagerState.value = carlinkManager
-        displayModeState.value = currentDisplayMode
+        com.carlink.platform.DecoderCompat.adjustAsync(
+            requestedWidth,
+            requestedHeight,
+            platformInfo.hardwareH264DecoderName,
+            mainHandler,
+        ) { (configWidth, configHeight) ->
+            if (generation != managerInitGeneration || isDestroyed || isFinishing) {
+                logInfo(
+                    "[DECODER_PROBE] Discarding result for ${requestedWidth}x$requestedHeight " +
+                        "(superseded by a newer init/teardown, or activity finishing)",
+                    tag = "MAIN",
+                )
+                return@adjustAsync
+            }
+            completeInit(configWidth, configHeight)
+        }
     }
 
     /**
@@ -791,7 +871,10 @@ class MainActivity : ComponentActivity() {
      * @param audioTransferMode `false` = ADAPTER (audio routed via USB, media session
      *   actively published), `true` = BLUETOOTH (audio via phone BT, session stays
      *   registered but inactive).
+     *
+     * Nesting is the null/state guards around the optional MediaSession reconfigure.
      */
+    @Suppress("NestedBlockDepth")
     private fun applyAudioTransferModeToMediaSession(audioTransferMode: Boolean) {
         if (!audioTransferMode) {
             if (mediaSessionManager == null) {
@@ -896,7 +979,11 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // 1. Tear down current adapter session
+        // 1. Tear down current adapter session.
+        // Invalidate any decoder probe still in flight from an earlier initializeCarlinkManager()
+        // pass: its result must not build a manager from the old mode's metrics during the
+        // 200 ms settle window below (the rebuild pass then leaks it by overwriting the field).
+        managerInitGeneration++
         val oldManager = carlinkManager
         if (oldManager != null) {
             logInfo("[DISPLAY_REINIT] Stopping current adapter session", tag = "MAIN")
@@ -921,7 +1008,10 @@ class MainActivity : ComponentActivity() {
             if (!isDestroyed && !isFinishing) {
                 logInfo("[DISPLAY_REINIT] Rebuilding CarlinkManager with new metrics", tag = "MAIN")
                 initializeCarlinkManager()
-                logInfo("[DISPLAY_REINIT] Complete — CarlinkManager recreated", tag = "MAIN")
+                logInfo(
+                    "[DISPLAY_REINIT] Rebuild dispatched — CarlinkManager is created once the decoder probe answers",
+                    tag = "MAIN",
+                )
             }
             pendingReinitRunnable = null
         }
@@ -945,7 +1035,11 @@ class MainActivity : ComponentActivity() {
             .putInt(0) // origin
             .array()
 
-    /** Build HU_SAFEAREA_INFO (20 bytes): [safe_w, safe_h, originX, originY, drawOutside] */
+    /**
+     * Build HU_SAFEAREA_INFO (20 bytes): [safe_w, safe_h, originX, originY, drawOutside]
+     * Params are the individual safe-area dimensions written to the wire frame.
+     */
+    @Suppress("LongParameterList")
     private fun buildSafeAreaData(
         videoW: Int,
         videoH: Int,
@@ -1329,8 +1423,8 @@ class MainActivity : ComponentActivity() {
         lastClusterRelaunchElapsedMs = SystemClock.elapsedRealtime()
         val am = getSystemService(ActivityManager::class.java)
         for (appTask in am.appTasks) {
-            if (appTask.taskInfo.baseActivity?.className == CAR_APP_ACTIVITY) {
-                logInfo("[CLUSTER] Finishing CarAppActivity task (taskId=${appTask.taskInfo.taskId})", tag = "MAIN")
+            if (appTask.taskInfo?.baseActivity?.className == CAR_APP_ACTIVITY) {
+                logInfo("[CLUSTER] Finishing CarAppActivity task (taskId=${appTask.taskInfo?.taskId})", tag = "MAIN")
                 appTask.finishAndRemoveTask()
                 break
             }
@@ -1462,24 +1556,61 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+/** Debug-only system property that fakes a streaming session; see [CarlinkApp]. */
+private const val DEBUG_FORCE_PROJECTION_PROP = "debug.carlink.force_projection"
+
+/** Poll interval for [DEBUG_FORCE_PROJECTION_PROP] (debug builds only). */
+private const val DEBUG_PROP_POLL_MS = 500L
+
+/** How long the dashboard stays up after STREAMING begins, so the first video frames land. */
+private const val PROJECTION_REVEAL_HOLD_MS = 2500L
+
+/** Dashboard fade-out when the projection takes over. */
+private const val DASHBOARD_FADE_OUT_MS = 1000
+
 /**
- * Main Composable App with Overlay Navigation
+ * Compose root: the dashboard is the base UI, the projection video is an exclusive overlay.
  *
- * ARCHITECTURE: Uses overlay/stack pattern instead of screen replacement.
- * MainScreen stays composed when SettingsScreen is pushed on top.
+ * WHAT THE USER SEES
+ * - Default (cold start, adapter search, phone pairing, after a session ends): the dashboard
+ *   ([SettingsScreen]) — full-screen, opaque.
+ * - While a session is STREAMING: the projection ([MainScreen]'s SurfaceView) — full-screen,
+ *   covering the dashboard completely. One or the other is on screen, never a blend.
+ * - REQUEST_HOST_UI from the phone (CarPlay's car button / AA's exit-to-host) while streaming:
+ *   the projection is dismissed and the dashboard shows again, with a primary "Return to
+ *   CarPlay / Android Auto" button (and Back) to re-show it. The adapter session is untouched
+ *   either way. When nothing is streaming the request is a no-op — the dashboard is already
+ *   what's on screen.
  *
- * WHY: The VideoSurface in MainScreen uses a SurfaceView.
- * When MainScreen is replaced (disposed), the Surface is destroyed,
- * causing "BufferQueue has been abandoned" errors if the MediaCodec is still
- * running. By keeping MainScreen always in composition and overlaying
- * SettingsScreen on top, the video continues playing uninterrupted.
+ * HOW IT IS COMPOSED (load-bearing: the visible order is the inverse of the composition order)
+ * - [MainScreen] is ALWAYS in composition, at the bottom of the Box, for the whole life of
+ *   [carlinkManager]. Its SurfaceView must never be disposed by navigation: that destroys the
+ *   Surface under a running MediaCodec ("BufferQueue has been abandoned"). It is "shown" purely
+ *   by the dashboard getting out of the way.
+ * - The dashboard is composed above it whenever [showProjection] is false, and removed while the
+ *   projection covers it. Removal also resets its page/modal state, so every reveal lands on the
+ *   dashboard home. The swap is an instant cut, not a fade: an alpha animation over a SurfaceView
+ *   is a crossfade with the live video plane and the return button would reflow mid-fade.
+ * - SurfaceView z-order is the default (behind the window, hole-punched). An opaque Compose
+ *   Surface drawn after the hole in the same window hides the video plane; removing it reveals
+ *   the plane. This is the mechanism the previous settings-over-video overlay already relied on,
+ *   with the roles swapped — no setZOrderOnTop / setZOrderMediaOverlay.
  *
- * BEHAVIOR:
- * - MainScreen is ALWAYS rendered (video keeps playing)
- * - SettingsScreen slides in ON TOP when showSettings is true
- * - Back button closes SettingsScreen overlay
- * - Video is never stopped during navigation
+ * STATE
+ * - [connectionState] mirrors the manager's state the moment [MainScreen]'s callback fires (the
+ *   dashboard's own 1 Hz SessionSnapshot poll is too slow to switch screens on).
+ * - [projectionDismissed] is the "show me the host UI" latch; cleared whenever the session leaves
+ *   STREAMING so the next session's video appears on its own.
+ * - Both survive recomposition via remember{} but are discarded on manager rebuild, because
+ *   CarlinkApp is gated by `if (manager != null)` at setContent — a tier-2 reinit lands back on
+ *   the dashboard. Intentional UX.
+ *
+ * DEBUG HOOK (debug builds only; no-op in release): on an adapter-less emulator,
+ * `adb shell setprop debug.carlink.force_projection 1` makes the UI behave as if a session were
+ * STREAMING (the empty SurfaceView covers the dashboard); `... host_ui` additionally fires one
+ * simulated REQUEST_HOST_UI when the value changes to it; `... 0` clears the override.
  */
+@Suppress("LongParameterList", "LongMethod")
 @Composable
 fun CarlinkApp(
     carlinkManager: CarlinkManager,
@@ -1492,62 +1623,153 @@ fun CarlinkApp(
     bridgeInstalled: Boolean = true,
     onOpenFiles: () -> Boolean = { false },
 ) {
-    // Survives normal recomposition via remember{}, but discarded on manager rebuild
-    // because CarlinkApp itself is gated by `if (manager != null)` at the Activity
-    // setContent — tier-2 reinit disposes the whole composable, so every reinit
-    // lands back in MainScreen regardless of prior overlay state. Intentional UX.
-    var showSettings by remember { mutableStateOf(false) }
+    var connectionState by remember(carlinkManager) { mutableStateOf(carlinkManager.state) }
+    var projectionDismissed by remember(carlinkManager) { mutableStateOf(false) }
+    var debugForcedStreaming by remember(carlinkManager) { mutableStateOf(false) }
+    var bridgeNotStarting by remember(carlinkManager) { mutableStateOf(false) } // [211]
 
-    // Log screen changes and recover video when overlay closes.
-    // Unlike Activity onStop/onStart, the settings overlay doesn't trigger lifecycle
-    // events. While the overlay covers the SurfaceView, SurfaceFlinger may stop
-    // consuming frames, stalling the codec's BufferQueue. Flush codec on overlay close.
-    LaunchedEffect(showSettings) {
-        val screenName = if (showSettings) "SettingsScreen (overlay)" else "MainScreen (Projection)"
-        logInfo("[UI_NAV] Active screen: $screenName", tag = "UI")
-        if (!showSettings) {
-            carlinkManager.recoverVideoFromOverlay()
+    val streaming = connectionState == CarlinkManager.State.STREAMING || debugForcedStreaming
+
+    // Hold the dashboard for PROJECTION_REVEAL_HOLD_MS after streaming begins so the video
+    // buffer has time to fill before the fade-out starts. Without the hold the first frame can
+    // be black or incomplete, and the reveal looks like a flash rather than a dissolve into video.
+    var videoSettled by remember(carlinkManager) { mutableStateOf(false) }
+    LaunchedEffect(streaming) {
+        if (streaming) {
+            delay(PROJECTION_REVEAL_HOLD_MS)
+            videoSettled = true
+        } else {
+            videoSettled = false
+        }
+    }
+    val showProjection = streaming && videoSettled && !projectionDismissed
+
+    // Video surface state is owned here (not inside MainScreen) so the backdrop capture below
+    // can read the live Surface. MainScreen wires it to its VideoSurface.
+    val surfaceState = rememberVideoSurfaceState()
+
+    // Frozen-frame backdrop for the dashboard when it is revealed over a LIVE session: PixelCopy
+    // one frame of the video surface and let SettingsScreen draw it blurred. Null when there is
+    // no session (dashboard stays opaque) or the copy fails (also opaque — never a live
+    // bleed-through). The SurfaceView is an HWC overlay and can't be GPU-blurred live; a static
+    // bitmap can.
+    var sessionBackdrop by remember(carlinkManager) { mutableStateOf<ImageBitmap?>(null) }
+
+    // The phone asked for the host UI. Reveal the dashboard — but only when the projection is
+    // actually covering it. Otherwise there is nothing to reveal and the request is a no-op; it
+    // must NOT latch, or a request during DEVICE_CONNECTED would suppress the video when
+    // STREAMING arrives moments later.
+    val hostUiRequested: () -> Unit =
+        remember(carlinkManager) {
+            {
+                val covering =
+                    (connectionState == CarlinkManager.State.STREAMING || debugForcedStreaming) &&
+                        !projectionDismissed
+                if (covering) {
+                    logInfo("[UI_NAV] Host UI requested: dismissing projection, revealing dashboard", tag = "UI")
+                    projectionDismissed = true
+                } else {
+                    logInfo("[UI_NAV] Host UI requested while dashboard already visible — no-op", tag = "UI")
+                }
+            }
+        }
+
+    // Re-show a dismissed projection (dashboard button and Back share this).
+    val returnToProjection: () -> Unit =
+        remember(carlinkManager) {
+            {
+                logInfo("[UI_NAV] Returning to projection", tag = "UI")
+                projectionDismissed = false
+                // The SurfaceView was fully occluded while dismissed; SurfaceFlinger may have
+                // stopped consuming its frames and stalled the codec's BufferQueue. Flush and
+                // request a keyframe — only HERE, never on plain STREAMING entry, where a flush
+                // would eat the session's first IDR. (No-op unless the manager is STREAMING.)
+                carlinkManager.recoverVideoFromOverlay()
+            }
+        }
+
+    // Session ended (or a reinit started): clear the latch so the next session's video shows
+    // on its own.
+    LaunchedEffect(streaming) {
+        if (!streaming && projectionDismissed) {
+            logInfo("[UI_NAV] Session left STREAMING while dismissed — clearing dismissal", tag = "UI")
+            projectionDismissed = false
         }
     }
 
-    // Handle back button to close settings overlay
-    BackHandler(enabled = showSettings) {
-        logInfo("[UI_NAV] Back pressed: Closing SettingsScreen overlay", tag = "UI")
-        showSettings = false
+    // Screen-change log + backdrop lifecycle. Keyed on `streaming` too so a backdrop captured
+    // for a session that then ends while the dashboard is up is dropped, not left behind.
+    LaunchedEffect(showProjection, streaming) {
+        logInfo(
+            "[UI_NAV] Active screen: ${if (showProjection) "Projection (video overlay)" else "Dashboard"}" +
+                " (streaming=$streaming, dismissed=$projectionDismissed)",
+            tag = "UI",
+        )
+        sessionBackdrop =
+            if (!showProjection && streaming) captureSurfaceBitmap(surfaceState) else null
+    }
+
+    if (BuildConfig.DEBUG) {
+        LaunchedEffect(carlinkManager) {
+            var last: String? = null
+            while (true) {
+                val value = DebugProps.get(DEBUG_FORCE_PROJECTION_PROP)
+                if (value != last) {
+                    if (last != null || value != null) {
+                        logWarn("[UI_DEBUG] $DEBUG_FORCE_PROJECTION_PROP=${value ?: "(unset)"}", tag = "UI")
+                    }
+                    debugForcedStreaming = value == "1" || value == "host_ui"
+                    if (value == "host_ui") hostUiRequested()
+                    last = value
+                }
+                delay(DEBUG_PROP_POLL_MS)
+            }
+        }
+    }
+
+    // Back while the dashboard covers a live session returns to the projection — the same
+    // thing Back did when the dashboard was the overlay. On the plain dashboard (no session)
+    // and on the projection itself, Back keeps its default (leave the activity), unchanged.
+    // Composed before SettingsScreen so its own Logs-page BackHandler still takes precedence.
+    BackHandler(enabled = streaming && projectionDismissed) {
+        logInfo("[UI_NAV] Back pressed on dashboard over live session", tag = "UI")
+        returnToProjection()
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // MainScreen is ALWAYS in composition - VideoSurface never gets disposed
-        // This keeps the Surface alive and video playing uninterrupted
+        // ALWAYS composed — see KDoc. Visible only when nothing is drawn over it.
         MainScreen(
             carlinkManager = carlinkManager,
             displayMode = displayMode,
-            onNavigateToSettings = {
-                logInfo("[UI_NAV] Opening SettingsScreen overlay (video continues)", tag = "UI")
-                showSettings = true
-            },
-            onResetConnection = onResetConnection,
+            onConnectionStateChanged = { connectionState = it },
+            onHostUiRequested = hostUiRequested,
             onPhoneConnected = onPhoneConnected,
-            bridgeInstalled = bridgeInstalled,
-            onOpenFiles = onOpenFiles,
+            onBridgeNotStartingChanged = { bridgeNotStarting = it },
+            surfaceState = surfaceState,
         )
 
-        // SettingsScreen slides in ON TOP of MainScreen
-        // MainScreen remains visible underneath (just covered)
+        // Dashboard: the base UI, drawn over the SurfaceView whenever the projection isn't
+        // meant to be on screen. Appears instantly; fades out over 1 s when the projection takes
+        // over (the fork's loading-overlay transition), then leaves composition, which also
+        // resets its page/modal state.
         AnimatedVisibility(
-            visible = showSettings,
-            enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
-            exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut(),
+            visible = !showProjection,
+            enter = EnterTransition.None,
+            exit = fadeOut(animationSpec = tween(durationMillis = DASHBOARD_FADE_OUT_MS)),
+            modifier = Modifier.fillMaxSize(),
         ) {
             SettingsScreen(
                 carlinkManager = carlinkManager,
                 fileLogManager = fileLogManager,
-                onNavigateBack = {
-                    logInfo("[UI_NAV] Closing SettingsScreen overlay", tag = "UI")
-                    showSettings = false
-                },
                 onResetCluster = onResetCluster,
+                // Non-null only when a live session is hidden behind the dashboard.
+                onReturnToProjection = if (streaming) returnToProjection else null,
                 onReinitForDisplayMode = onReinitForDisplayMode,
+                onResetConnection = onResetConnection,
+                sessionBackdrop = sessionBackdrop,
+                bridgeInstalled = bridgeInstalled,
+                bridgeNotStarting = bridgeNotStarting,
+                onOpenFiles = onOpenFiles,
             )
         }
     }

@@ -6,6 +6,7 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -103,7 +104,10 @@ import kotlinx.coroutines.launch
  * @param onReinitAdapter Tier-2 callback. NAME IS MISLEADING: MainActivity implements this
  *   as `reinitializeForDisplayMode`, i.e. a full CarlinkManager rebuild — not just an
  *   adapter re-init. See MainActivity for actual behavior.
+ *
+ * Large Compose config dialog; length/branches are declarative UI + per-field state, not logic.
  */
+@Suppress("CyclomaticComplexMethod", "LongMethod")
 @Composable
 fun AdapterConfigurationDialog(
     adapterConfigPreference: AdapterConfigPreference,
@@ -726,7 +730,7 @@ fun AdapterConfigurationDialog(
                                 Text(
                                     text =
                                         if (selectedGpsForwarding) {
-                                            "Enabled — vehicle GPS forwarded adapter"
+                                            "Enabled — vehicle GPS forwarded to adapter"
                                         } else {
                                             "Disabled — phone uses its own GPS"
                                         },
@@ -776,7 +780,7 @@ fun AdapterConfigurationDialog(
                             // WiFi Band Configuration
                             ConfigurationOptionCard(
                                 title = "WiFi Band",
-                                description = "Wireless band Adapter should use.",
+                                description = "Wireless band adapter should use.",
                                 icon = Icons.Default.Wifi,
                             ) {
                                 Row(
@@ -878,20 +882,22 @@ fun AdapterConfigurationDialog(
 
                 Spacer(modifier = Modifier.height(24.dp))
 
-                // Footer with action buttons
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
+                // Footer with action buttons. The three buttons are declared as slots so the
+                // arrangement can adapt to the dialog width: side by side when there is room,
+                // otherwise Apply on its own full-width row above Cancel/Default (Material 3
+                // "stacked" dialog actions for labels that don't fit). At the 320dp minimum
+                // dialog width the old weighted Row broke "Apply" mid-word ("Appl / y").
                     // Cancel button
-                    TextButton(
-                        onClick = {
-                            logWarn("[UI_ACTION] Adapter Config: Cancel button clicked", tag = "UI")
-                            onDismiss()
-                        },
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text("Cancel")
+                    val cancelButton: @Composable (Modifier) -> Unit = { buttonModifier ->
+                        TextButton(
+                            onClick = {
+                                logWarn("[UI_ACTION] Adapter Config: Cancel button clicked", tag = "UI")
+                                onDismiss()
+                            },
+                            modifier = buttonModifier,
+                        ) {
+                            Text("Cancel", maxLines = 1)
+                        }
                     }
 
                     // Default button.
@@ -902,21 +908,23 @@ fun AdapterConfigurationDialog(
                     // The log message below says "next session will run FULL init", which
                     // implies the user must restart manually — contrast Apply's auto-restart.
                     // Consider harmonizing the two flows (do not change here without approval).
-                    TextButton(
-                        onClick = {
-                            logWarn(
-                                "[UI_ACTION] Adapter Config: Reset to Defaults clicked" +
-                                    " - next session will run FULL init",
-                                tag = "UI",
-                            )
-                            scope.launch {
-                                adapterConfigPreference.resetToDefaults()
-                                onDismiss()
-                            }
-                        },
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text("Default")
+                    val defaultButton: @Composable (Modifier) -> Unit = { buttonModifier ->
+                        TextButton(
+                            onClick = {
+                                logWarn(
+                                    "[UI_ACTION] Adapter Config: Reset to Defaults clicked" +
+                                        " - next session will run FULL init",
+                                    tag = "UI",
+                                )
+                                scope.launch {
+                                    adapterConfigPreference.resetToDefaults()
+                                    onDismiss()
+                                }
+                            },
+                            modifier = buttonModifier,
+                        ) {
+                            Text("Default", maxLines = 1)
+                        }
                     }
 
                     // Apply button — tiered restart strategy:
@@ -933,6 +941,7 @@ fun AdapterConfigurationDialog(
                             else -> "SAVE-ONLY" // [216] background logo only
                         }
 
+                    val applyButton: @Composable (Modifier) -> Unit = { buttonModifier ->
                     Button(
                         onClick = {
                             logWarn(
@@ -1038,7 +1047,7 @@ fun AdapterConfigurationDialog(
                                 }
                             }
                         },
-                        modifier = Modifier.weight(1.5f),
+                        modifier = buttonModifier,
                         enabled = hasChanges,
                     ) {
                         Icon(
@@ -1047,13 +1056,43 @@ fun AdapterConfigurationDialog(
                             modifier = Modifier.size(18.dp),
                         )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text(if (miscChanged) "Apply & Restart" else "Apply")
+                        Text(if (miscChanged) "Apply & Restart" else "Apply", maxLines = 1)
                     }
-                }
+                    }
+
+                    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                        if (maxWidth < STACKED_ACTIONS_MAX_WIDTH) {
+                            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                applyButton(Modifier.fillMaxWidth())
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                ) {
+                                    cancelButton(Modifier.weight(1f))
+                                    defaultButton(Modifier.weight(1f))
+                                }
+                            }
+                        } else {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                cancelButton(Modifier.weight(1f))
+                                defaultButton(Modifier.weight(1f))
+                                applyButton(Modifier.weight(1.5f))
+                            }
+                        }
+                    }
             }
         }
     }
 }
+
+/**
+ * Below this inner width the footer stacks Apply above Cancel/Default. 360dp holds
+ * "Cancel" + "Default" + "Apply & Restart" (icon, padding) side by side; narrower doesn't.
+ */
+private val STACKED_ACTIONS_MAX_WIDTH = 360.dp
 
 /**
  * Configuration Option Card - Container for a single configuration option
@@ -1119,7 +1158,10 @@ internal fun ConfigurationOptionCard(
  * Audio Source Selection Button
  *
  * Toggle button with animated visual indicator for selected state.
+ *
+ * Compose button; length is declarative UI layout.
  */
+@Suppress("LongMethod")
 @Composable
 private fun AudioSourceButton(
     label: String,

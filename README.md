@@ -62,6 +62,9 @@ Numbers in brackets are entries in [documents/revisions.txt](documents/revisions
 **Display**
 - No more flash of the system bars, widget panel or a black screen when the phone connects ([214], [215]).
 - **Background Logo** setting: GMC or CHEVROLET on the connecting screen ([216]).
+- The main screen is now upstream's dashboard: adapter name and connection status up top, known
+  phones and controls in cards, over the mountain scene. The phone's car button brings it back over
+  a live session, with a button to return ([220]).
 
 **Voice**
 - The steering wheel voice button can start Siri, ported from Eric Yanush's work in PR #15. To turn it
@@ -107,7 +110,9 @@ firmware on the adapter. It isn't required, but it gives a more complete, closer
 ![Screenshot of Apple CarPlay via Adapter from iPhone Air](/screenshots/Carplay.png)
 
 ### Main app screen
-![Screenshot of Main App Screen](/screenshots/MainPage.png)
+Upstream's screenshot; Carlink2 draws the mountain scene behind the same dashboard.
+
+![Screenshot of the dashboard](/screenshots/Dashboard-Idle.png)
 
 ### Adapter configuration
 

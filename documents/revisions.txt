@@ -1676,3 +1676,13 @@
    - Affected: MainActivity.kt, AndroidManifest.xml (comment), assistant/SiriDelegation.kt,
      assistant/SiriVoiceSessionService.kt, ui/settings/AdapterConfigPreference.kt,
      ui/settings/AdapterConfigurationDialog.kt, documents/reference/siri_voice_integration.md, app/build.gradle.kts.
+
+[219] :: Carlink2 Siri now shows up in the car's digital assistant list (supportsAssist=true, from upstream aec6b3d).
+   - On the truck (v218), Carlink2 wasn't offered in the digital/voice assistant settings. Android only qualifies an
+     app for the ASSISTANT role when its VoiceInteractionService declares supportsAssist; [217] took upstream 6da7265,
+     which had android:supportsAssist="false" in res/xml/siri_voice_interaction.xml. ericyanush fixed it the same day
+     in aec6b3d ("Fix siri voice integration; broke it while trying to clean up my testing code."), the last commit
+     in lvalen91/carlink#15; nothing after it touches voice.
+   - Taken as-is: supportsAssist="true". Doc note added to documents/reference/siri_voice_integration.md.
+   - UNTESTED: not compiled in the authoring environment (no Android SDK); not run on hardware.
+   - Affected: res/xml/siri_voice_interaction.xml, documents/reference/siri_voice_integration.md, app/build.gradle.kts.

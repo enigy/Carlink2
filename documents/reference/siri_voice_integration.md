@@ -36,3 +36,9 @@ There is no on/off switch in Carlink2: choosing **Carlink2 Siri** as the car's d
 in the car's settings turns it on, and choosing another assistant turns it off. [217] briefly had
 a Voice Button setting that disabled the assistant components; [218] removed it, and Carlink2
 re-enables those components at startup if that setting had switched them off.
+
+**Showing up in the car's assistant list ([219]).** Android only offers an app as the default
+assistant when its voice interaction service declares `android:supportsAssist="true"` in
+`res/xml/siri_voice_interaction.xml` (the ASSISTANT role needs a service that "is capable of
+handling the assist action"). [217] shipped `false`, from upstream `6da7265`, so Carlink2 Siri never
+appeared in the truck's digital assistant menu; ericyanush's follow-up `aec6b3d` sets it to `true`.

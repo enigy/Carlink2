@@ -28,7 +28,7 @@ fork, so maneuver icons show on the HUD. Details and diagnostics:
 3. Copy [`app/carlink2_bridge.apk`](app/carlink2_bridge.apk) (bridge 1.0.2) to a USB drive.
    SHA-256: `aff977cc82806016a1401d182cc0f0ce88c711c16aca66ef7c4db613e879079c`
 4. While parked, open Carlink2. It shows **USB bridge not installed** with an **Open Files** button
-   that opens the head unit's hidden Files app. Open the drive and tap the APK. If asked, allow Files
+   that opens the head unit's hidden Files app. Insert the USB drive, Open the drive and tap the APK. If asked, allow Files
    to install apps.
 5. When the install finishes, tap the Carlink2 notification (or press Home and open Carlink2).
    Carlink2 connects once you're back.

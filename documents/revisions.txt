@@ -1637,3 +1637,27 @@
    - UNTESTED: not compiled in the authoring environment (no Android SDK); not run on hardware.
    - Affected: ui/settings/AdapterConfigPreference.kt, ui/settings/AdapterConfigurationDialog.kt, ui/MainScreen.kt,
      res/drawable-nodpi/loading_bg_chevrolet.jpg (new), app/build.gradle.kts.
+
+[217] :: Steering wheel voice button → Siri (ported from ericyanush, lvalen91/carlink#15 6da7265), with an on/off setting.
+   - From the upstream commit: a minimal AAOS voice assistant ("Carlink2 Siri": SiriVoiceInteractionService,
+     SiriVoiceSessionService, SiriRecognitionService, res/xml/siri_voice_interaction.xml). When the car invokes its
+     assistant, the session asks SiriDelegation's registry to forward it; CarlinkManager sends the adapter's Siri
+     button down + up on the live CarPlay session, and the adapter's AUDIO_SIRI_START then drives the existing mic and
+     audio path. Declined (brief toast) when CarPlay isn't streaming, a call or Siri is already active, or within
+     1.5 s of the last request. Unit test SiriDelegationTest.kt and documents/reference/siri_voice_integration.md
+     came with it.
+   - Adapted: Carlink2 has no failureGate/commandWorker, so requestSiri() checks state and sends on scope's IO
+     dispatcher; a request whose session was replaced, or that waited over 2 s, is dropped, and the release is only
+     sent on the same session as the press. The upstream LogsTab wording change didn't apply (text not in Carlink2).
+   - New: Settings → Adapter Configuration → Misc → Voice Button, Siri (default) or Off, stored as
+     "voice_button_siri" (app-only, no pending adapter change). Off disables the three assistant components via
+     setComponentEnabledSetting so the button goes to the car's own assistant; MainActivity re-applies on start and
+     Reset to Defaults turns it back on. A logo/voice-only Apply saves and closes (tier=SAVE-ONLY), no reconnect.
+   - Setup: choose "Carlink2 Siri" once as the car's default assistant; Android doesn't let an app take that role
+     itself. Whether GM's AAOS lets you choose it and sends the wheel button to it is what the upstream "sorta" means.
+   - Log: "[SIRI] Voice button → Siri: downSent=… upSent=…".
+   - UNTESTED: not compiled in the authoring environment (no Android SDK); not run on hardware.
+   - Affected: AndroidManifest.xml, CarlinkManager.kt, MainActivity.kt, assistant/* (new), ui/settings/
+     AdapterConfigPreference.kt, ui/settings/AdapterConfigurationDialog.kt, res/values/strings.xml,
+     res/xml/siri_voice_interaction.xml (new), src/test/.../SiriDelegationTest.kt (new),
+     documents/reference/siri_voice_integration.md (new), app/build.gradle.kts.

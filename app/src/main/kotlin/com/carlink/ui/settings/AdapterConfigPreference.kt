@@ -355,6 +355,17 @@ class AdapterConfigPreference private constructor(
         // Background logo: stored as BackgroundLogoConfig.code ("gmc", "chevrolet")
         private val KEY_BACKGROUND_LOGO = stringPreferencesKey("background_logo")
 
+        // Voice button → Siri: true = Carlink2's assistant forwards the car's voice button to Siri
+        private val KEY_VOICE_BUTTON_SIRI = booleanPreferencesKey("voice_button_siri")
+
+        // [217] The AAOS assistant components, enabled/disabled together by the voice-button setting.
+        private val VOICE_ASSISTANT_COMPONENTS =
+            listOf(
+                "com.carlink.assistant.SiriVoiceInteractionService",
+                "com.carlink.assistant.SiriVoiceSessionService",
+                "com.carlink.assistant.SiriRecognitionService",
+            )
+
         // Initialization tracking
         private val KEY_HAS_COMPLETED_FIRST_INIT = booleanPreferencesKey("has_completed_first_init")
         private val KEY_LAST_INIT_VERSION_CODE = longPreferencesKey("last_init_version_code")
@@ -373,6 +384,7 @@ class AdapterConfigPreference private constructor(
         private const val SYNC_CACHE_KEY_GPS_FORWARDING = "gps_forwarding"
         private const val SYNC_CACHE_KEY_CLUSTER_NAVIGATION = "cluster_navigation_enabled"
         private const val SYNC_CACHE_KEY_BACKGROUND_LOGO = "background_logo"
+        private const val SYNC_CACHE_KEY_VOICE_BUTTON_SIRI = "voice_button_siri"
         private const val SYNC_CACHE_KEY_HAS_COMPLETED_FIRST_INIT = "has_completed_first_init"
         private const val SYNC_CACHE_KEY_LAST_INIT_VERSION_CODE = "last_init_version_code"
         private const val SYNC_CACHE_KEY_PENDING_CHANGES = "pending_changes"
@@ -830,6 +842,55 @@ class AdapterConfigPreference private constructor(
         }
     }
 
+    val voiceButtonSiriFlow: Flow<Boolean> =
+        dataStore.data.map { preferences ->
+            preferences[KEY_VOICE_BUTTON_SIRI] ?: true
+        }
+
+    /**
+     * Get the voice-button-to-Siri setting synchronously. On by default.
+     */
+    fun getVoiceButtonSiriSync(): Boolean = syncCache.getBoolean(SYNC_CACHE_KEY_VOICE_BUTTON_SIRI, true)
+
+    /**
+     * Set voice-button-to-Siri, and enable/disable the assistant components to match at once.
+     * This is a local app setting — does NOT call addPendingChange() (not an adapter config).
+     */
+    suspend fun setVoiceButtonSiri(enabled: Boolean) {
+        try {
+            dataStore.edit { preferences ->
+                preferences[KEY_VOICE_BUTTON_SIRI] = enabled
+            }
+            syncCache.edit().putBoolean(SYNC_CACHE_KEY_VOICE_BUTTON_SIRI, enabled).apply()
+            applyVoiceAssistantComponentState(appContext)
+            logInfo("Voice button → Siri preference saved: $enabled", tag = "AdapterConfig")
+        } catch (e: IOException) {
+            logError("Failed to save voice button → Siri preference: $e", tag = "AdapterConfig")
+            throw e
+        }
+    }
+
+    /**
+     * [217] Enable or disable Carlink2's AAOS assistant (voice button → Siri) to match the setting.
+     * Disabled, the system can't select or invoke it, so the car's own assistant gets the button.
+     * Called from Activity.onCreate() and on every change. DONT_KILL_APP: takes effect at once.
+     */
+    fun applyVoiceAssistantComponentState(context: Context) {
+        val newState =
+            if (getVoiceButtonSiriSync()) {
+                PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+            } else {
+                PackageManager.COMPONENT_ENABLED_STATE_DISABLED
+            }
+        for (className in VOICE_ASSISTANT_COMPONENTS) {
+            context.packageManager.setComponentEnabledSetting(
+                ComponentName(context, className),
+                newState,
+                PackageManager.DONT_KILL_APP,
+            )
+        }
+    }
+
     /**
      * Apply the cluster service component enabled/disabled state based on preference.
      * Call this early in Activity.onCreate() so the state is set before Templates Host discovers it.
@@ -949,6 +1010,7 @@ class AdapterConfigPreference private constructor(
                 preferences.remove(KEY_GPS_FORWARDING)
                 preferences.remove(KEY_CLUSTER_NAVIGATION)
                 preferences.remove(KEY_BACKGROUND_LOGO)
+                preferences.remove(KEY_VOICE_BUTTON_SIRI)
                 preferences.remove(KEY_HAS_COMPLETED_FIRST_INIT)
                 preferences.remove(KEY_LAST_INIT_VERSION_CODE)
                 preferences.remove(KEY_PENDING_CHANGES)
@@ -968,10 +1030,12 @@ class AdapterConfigPreference private constructor(
                     remove(SYNC_CACHE_KEY_GPS_FORWARDING)
                     remove(SYNC_CACHE_KEY_CLUSTER_NAVIGATION)
                     remove(SYNC_CACHE_KEY_BACKGROUND_LOGO)
+                    remove(SYNC_CACHE_KEY_VOICE_BUTTON_SIRI)
                     remove(SYNC_CACHE_KEY_HAS_COMPLETED_FIRST_INIT)
                     remove(SYNC_CACHE_KEY_LAST_INIT_VERSION_CODE)
                     remove(SYNC_CACHE_KEY_PENDING_CHANGES)
                 }.apply()
+            applyVoiceAssistantComponentState(appContext) // [217] default is on
             logInfo(
                 "Adapter config preferences reset to defaults" +
                     " (sync cache cleared, next session will run FULL init)",

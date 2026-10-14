@@ -307,6 +307,8 @@ class MainActivity : ComponentActivity() {
 
         // Apply cluster service component state before Templates Host discovers it
         AdapterConfigPreference.getInstance(this).applyClusterComponentState(this)
+        // [217] Voice button → Siri assistant on or off per the setting (on by default)
+        AdapterConfigPreference.getInstance(this).applyVoiceAssistantComponentState(this)
 
         // Load display mode preference and apply BEFORE calculating display dimensions
         // This ensures correct viewport sizing - fullscreen immersive uses full screen (1920x1080),

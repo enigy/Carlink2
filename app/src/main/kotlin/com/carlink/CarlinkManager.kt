@@ -9,6 +9,9 @@ import android.os.SystemClock
 import android.view.Surface
 import androidx.core.content.edit
 import com.carlink.BuildConfig
+import com.carlink.assistant.SiriDelegation
+import com.carlink.assistant.SiriRequestResult
+import com.carlink.assistant.SiriRequestTarget
 import com.carlink.audio.DualStreamAudioManager
 import com.carlink.audio.MicrophoneCaptureManager
 import com.carlink.gnss.GnssForwarder
@@ -120,7 +123,7 @@ class CarlinkManager(
      * audio mode is selected (no AAOS media source advertised).
      */
     injectedMediaSessionManager: MediaSessionManager? = null,
-) {
+) : SiriRequestTarget {
     init {
         NavigationStateManager.initialize(context.applicationContext)
         // Enable the composer debug PNG dumper so every composed maneuver bitmap is also
@@ -768,6 +771,7 @@ class CarlinkManager(
         surfaceHeight: Int,
         callback: Callback,
     ) {
+        SiriDelegation.registry.attach(this) // [217] voice button → Siri
         // Round to even numbers for H.264 compatibility
         val evenWidth = surfaceWidth and 1.inv()
         val evenHeight = surfaceHeight and 1.inv()
@@ -1800,6 +1804,38 @@ class CarlinkManager(
      */
     private fun sendKey(command: CommandMapping): Boolean = adapterDriver?.sendCommand(command) ?: false
 
+    /**
+     * [217] Steering-wheel voice button → Siri, via the AAOS assistant in [com.carlink.assistant]
+     * (ported from ericyanush's lvalen91/carlink#15, 6da7265). Queues a Siri button press and
+     * release for the current CarPlay session only. Returns at once; the USB writes run on IO.
+     */
+    override fun requestSiri(): SiriRequestResult {
+        val driver = adapterDriver
+        if (driver == null || state != State.STREAMING || currentPhoneType != PhoneType.CARPLAY) {
+            return SiriRequestResult.NOT_CONNECTED
+        }
+        if (isPhoneCallAudioActive || isSiriAudioActive) return SiriRequestResult.BUSY
+        val queuedAt = SystemClock.elapsedRealtime()
+        scope.launch(Dispatchers.IO) {
+            // Don't replay into a replaced session, or after a long stall.
+            if (adapterDriver !== driver || state != State.STREAMING || currentPhoneType != PhoneType.CARPLAY ||
+                isPhoneCallAudioActive || isSiriAudioActive || SystemClock.elapsedRealtime() - queuedAt > 2000L
+            ) {
+                return@launch
+            }
+            var downSent = false
+            var upSent = false
+            try {
+                downSent = driver.sendCommand(CommandMapping.SIRI)
+            } finally {
+                // Always release on the same session, even if the press failed; never on a new one.
+                if (adapterDriver === driver) upSent = driver.sendCommand(CommandMapping.SIRI_BUTTON_UP)
+                logInfo("[SIRI] Voice button → Siri: downSent=$downSent upSent=$upSent", tag = Logger.Tags.USB)
+            }
+        }
+        return SiriRequestResult.QUEUED
+    }
+
     // AA MOVE rate-limit timestamp. carlink_native skips a MOVE send when <17ms
     // elapsed since the previous one. See [AA_TOUCH_THROTTLE_NS] for the full
     // explanation — and the important distinction from AutoKit's use of the same
@@ -1929,6 +1965,7 @@ class CarlinkManager(
      * MicrophoneCaptureManager, GnssForwarder, MediaSessionManager, finally scope.cancel().
      */
     fun release() {
+        SiriDelegation.registry.detach(this) // [217]
         stop()
 
         h264Renderer?.stop()

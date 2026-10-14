@@ -25,21 +25,14 @@ This depends on the vehicle allowing Carlink to be selected as its default
 assistant and routing the steering wheel's short press to that assistant. Long
 press behavior may remain owned by GM's projection or Bluetooth integration.
 
-## Carlink2: on/off setting ([217])
+## Carlink2 port ([217], [218])
 
 Ported from ericyanush's commit `6da7265` on lvalen91/carlink#15. Carlink2 sends the
 press/release from `CarlinkManager.requestSiri()` on its own IO path (the original used
 `failureGate`/`commandWorker`, which Carlink2 doesn't have); a request queued for a session that
 has since been replaced, or that waited over 2 s, is dropped.
 
-**Settings → Adapter Configuration → Misc → Voice Button** chooses **Siri** (default) or **Off**.
-Off disables the three assistant components (`SiriVoiceInteractionService`,
-`SiriVoiceSessionService`, `SiriRecognitionService`) with `setComponentEnabledSetting`, so the
-system can't select or invoke Carlink2 Siri and the button goes to the car's own assistant.
-MainActivity re-applies the state on every start, and Reset to Defaults turns it back on. It is an
-app-only setting: Apply saves it without reconnecting the adapter. A session already starting when
-it is switched off reports "Voice button to Siri is off in Carlink2 settings".
-
-Choosing Carlink2 Siri as the default assistant is a one-time step in the car's settings; Android
-doesn't let an app make itself the assistant. After switching Off and back to Siri, the car may need
-Carlink2 Siri chosen again.
+There is no on/off switch in Carlink2: choosing **Carlink2 Siri** as the car's default assistant
+in the car's settings turns it on, and choosing another assistant turns it off. [217] briefly had
+a Voice Button setting that disabled the assistant components; [218] removed it, and Carlink2
+re-enables those components at startup if that setting had switched them off.

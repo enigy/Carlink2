@@ -33,7 +33,6 @@ import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.PhoneInTalk
 import androidx.compose.material.icons.filled.Radio
-import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.SettingsInputComponent
@@ -147,9 +146,6 @@ fun AdapterConfigurationDialog(
     val savedBackgroundLogo by adapterConfigPreference.backgroundLogoFlow.collectAsStateWithLifecycle(
         initialValue = adapterConfigPreference.getBackgroundLogoSync(),
     )
-    val savedVoiceButtonSiri by adapterConfigPreference.voiceButtonSiriFlow.collectAsStateWithLifecycle(
-        initialValue = adapterConfigPreference.getVoiceButtonSiriSync(),
-    )
 
     // Get usable display dimensions based on current display mode
     // FULLSCREEN_IMMERSIVE: Use full display bounds (bars are hidden)
@@ -226,7 +222,6 @@ fun AdapterConfigurationDialog(
     var selectedGpsForwarding by remember { mutableStateOf(savedGpsForwarding) }
     var selectedClusterNavigation by remember { mutableStateOf(savedClusterNavigation) }
     var selectedBackgroundLogo by remember { mutableStateOf(savedBackgroundLogo) }
-    var selectedVoiceButtonSiri by remember { mutableStateOf(savedVoiceButtonSiri) }
 
     // Sync local state when saved value loads (for initial load).
     // KNOWN THEORETICAL RACE (flow-shadow): any subsequent DataStore emission for one of these
@@ -244,7 +239,6 @@ fun AdapterConfigurationDialog(
     LaunchedEffect(savedGpsForwarding) { selectedGpsForwarding = savedGpsForwarding }
     LaunchedEffect(savedClusterNavigation) { selectedClusterNavigation = savedClusterNavigation }
     LaunchedEffect(savedBackgroundLogo) { selectedBackgroundLogo = savedBackgroundLogo }
-    LaunchedEffect(savedVoiceButtonSiri) { selectedVoiceButtonSiri = savedVoiceButtonSiri }
 
     // Track if any changes were made.
     // NOTE (stale): the old one-liner here claimed "All adapter configuration changes require
@@ -261,12 +255,8 @@ fun AdapterConfigurationDialog(
             selectedHandDrive != savedHandDrive ||
             selectedGpsForwarding != savedGpsForwarding ||
             selectedClusterNavigation != savedClusterNavigation
-    // [216]/[217] Background logo and voice button are app-only: changing just those saves
-    // without any reinit.
-    val hasChanges =
-        adapterSettingsChanged ||
-            selectedBackgroundLogo != savedBackgroundLogo ||
-            selectedVoiceButtonSiri != savedVoiceButtonSiri
+    // [216] The background logo is app-only: changing just that saves without any reinit.
+    val hasChanges = adapterSettingsChanged || selectedBackgroundLogo != savedBackgroundLogo
 
     // Responsive dialog width - 60% of container width, clamped between 320dp and 600dp
     val windowInfo = LocalWindowInfo.current
@@ -783,44 +773,6 @@ fun AdapterConfigurationDialog(
                                 )
                             }
 
-                            // [217] Voice Button — app-only, applies without a reinit
-                            ConfigurationOptionCard(
-                                title = "Voice Button",
-                                description = "Send the steering wheel voice button to Siri on the iPhone.",
-                                icon = Icons.Default.RecordVoiceOver,
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                ) {
-                                    AudioSourceButton(
-                                        label = "Off",
-                                        icon = Icons.Default.RecordVoiceOver,
-                                        isSelected = !selectedVoiceButtonSiri,
-                                        onClick = { selectedVoiceButtonSiri = false },
-                                        modifier = Modifier.weight(1f),
-                                    )
-                                    AudioSourceButton(
-                                        label = "Siri",
-                                        icon = Icons.Default.RecordVoiceOver,
-                                        isSelected = selectedVoiceButtonSiri,
-                                        onClick = { selectedVoiceButtonSiri = true },
-                                        modifier = Modifier.weight(1f),
-                                    )
-                                }
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Text(
-                                    text =
-                                        if (selectedVoiceButtonSiri) {
-                                            "Siri — choose \"Carlink2 Siri\" once as the car's default assistant"
-                                        } else {
-                                            "Off — the voice button goes to the car's own assistant"
-                                        },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = colorScheme.primary,
-                                )
-                            }
-
                             // WiFi Band Configuration
                             ConfigurationOptionCard(
                                 title = "WiFi Band",
@@ -978,7 +930,7 @@ fun AdapterConfigurationDialog(
                         when {
                             miscChanged -> "3-KILL"
                             adapterSettingsChanged -> "2-REINIT"
-                            else -> "SAVE-ONLY" // [216]/[217] background logo / voice button only
+                            else -> "SAVE-ONLY" // [216] background logo only
                         }
 
                     Button(
@@ -996,7 +948,6 @@ fun AdapterConfigurationDialog(
                                     ", gpsForwarding=$selectedGpsForwarding" +
                                     ", clusterNav=$selectedClusterNavigation" +
                                     ", backgroundLogo=$selectedBackgroundLogo" +
-                                    ", voiceButtonSiri=$selectedVoiceButtonSiri" +
                                     ", tier=$applyTier",
                                 tag = "UI",
                             )
@@ -1004,14 +955,10 @@ fun AdapterConfigurationDialog(
                             // the firmware-bug workaround as a literal. If the BoxSettings
                             // hardcode ever changes, this log will silently lie — keep in sync.
                             scope.launch {
-                                // [216]/[217] App-only; both take effect at once (the connecting screen
-                                // observes the logo; the voice setter flips the assistant components).
-                                // Nothing else changed → no setters (they'd queue pending adapter
-                                // changes) and no reinit.
+                                // [216] App-only; the connecting screen observes it and switches
+                                // at once. Nothing else changed → no setters (they'd queue pending
+                                // adapter changes) and no reinit.
                                 adapterConfigPreference.setBackgroundLogo(selectedBackgroundLogo)
-                                if (selectedVoiceButtonSiri != savedVoiceButtonSiri) {
-                                    adapterConfigPreference.setVoiceButtonSiri(selectedVoiceButtonSiri)
-                                }
                                 if (!adapterSettingsChanged) {
                                     onDismiss()
                                     return@launch

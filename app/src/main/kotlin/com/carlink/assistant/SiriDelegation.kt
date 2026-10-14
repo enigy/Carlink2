@@ -8,7 +8,6 @@ enum class SiriRequestResult(val feedback: String) {
     BUSY("Voice session already active"),
     DUPLICATE("Siri already requested"),
     UNAVAILABLE("Siri command unavailable"),
-    DISABLED("Voice button to Siri is off in Carlink2 settings"),
 }
 
 fun interface SiriRequestTarget {

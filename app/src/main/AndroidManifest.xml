@@ -97,8 +97,7 @@
 
         <!-- [217] Steering wheel voice button → Siri (from ericyanush, lvalen91/carlink#15).
              Android invokes the selected assistant; it forwards voice requests to CarPlay.
-             Enabled/disabled at runtime by the Voice Button setting
-             (AdapterConfigPreference.applyVoiceAssistantComponentState). -->
+             Choosing "Carlink2 Siri" as the car's assistant is what turns it on. -->
         <service
             android:name="com.carlink.assistant.SiriVoiceInteractionService"
             android:label="@string/siri_assistant_name"

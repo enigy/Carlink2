@@ -5,6 +5,7 @@ import android.app.Activity
 import android.app.ActivityManager
 import android.app.Application
 import android.content.BroadcastReceiver
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -307,8 +308,18 @@ class MainActivity : ComponentActivity() {
 
         // Apply cluster service component state before Templates Host discovers it
         AdapterConfigPreference.getInstance(this).applyClusterComponentState(this)
-        // [217] Voice button → Siri assistant on or off per the setting (on by default)
-        AdapterConfigPreference.getInstance(this).applyVoiceAssistantComponentState(this)
+        // [218] [217]'s Voice Button setting is gone (the car's own assistant setting already decides);
+        // undo its Off, which disabled the assistant components, so Carlink2 Siri stays available.
+        for (name in listOf("SiriVoiceInteractionService", "SiriVoiceSessionService", "SiriRecognitionService")) {
+            val component = ComponentName(this, "com.carlink.assistant.$name")
+            if (packageManager.getComponentEnabledSetting(component) == PackageManager.COMPONENT_ENABLED_STATE_DISABLED) {
+                packageManager.setComponentEnabledSetting(
+                    component,
+                    PackageManager.COMPONENT_ENABLED_STATE_DEFAULT,
+                    PackageManager.DONT_KILL_APP,
+                )
+            }
+        }
 
         // Load display mode preference and apply BEFORE calculating display dimensions
         // This ensures correct viewport sizing - fullscreen immersive uses full screen (1920x1080),

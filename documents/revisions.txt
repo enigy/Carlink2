@@ -1661,3 +1661,18 @@
      AdapterConfigPreference.kt, ui/settings/AdapterConfigurationDialog.kt, res/values/strings.xml,
      res/xml/siri_voice_interaction.xml (new), src/test/.../SiriDelegationTest.kt (new),
      documents/reference/siri_voice_integration.md (new), app/build.gradle.kts.
+
+[218] :: Remove [217]'s Voice Button setting; the car's own assistant setting already turns Siri on or off.
+   - The voice button only reaches Carlink2 after the user chooses "Carlink2 Siri" as the car's default assistant in
+     the car's settings, so a second on/off switch in Carlink2 added nothing.
+   - AdapterConfigPreference.kt and AdapterConfigurationDialog.kt are back to their [216] state (no Voice Button card,
+     no "voice_button_siri" key, logo-only Apply is SAVE-ONLY again). SiriDelegation.kt and SiriVoiceSessionService.kt
+     are back to the upstream 6da7265 versions (no DISABLED result or settings check).
+   - Kept from [217]: the assistant services, CarlinkManager.requestSiri() and its registry attach/detach, the manifest
+     entries, "Carlink2 Siri", the unit test and the doc.
+   - MainActivity.onCreate re-enables the three assistant components if [217]'s Off left them disabled (no-op
+     otherwise). The orphaned "voice_button_siri" value left in storage is unused.
+   - UNTESTED: not compiled in the authoring environment (no Android SDK); not run on hardware.
+   - Affected: MainActivity.kt, AndroidManifest.xml (comment), assistant/SiriDelegation.kt,
+     assistant/SiriVoiceSessionService.kt, ui/settings/AdapterConfigPreference.kt,
+     ui/settings/AdapterConfigurationDialog.kt, documents/reference/siri_voice_integration.md, app/build.gradle.kts.

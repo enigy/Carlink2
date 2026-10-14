@@ -23,7 +23,9 @@ request cannot be sent.
 
 This depends on the vehicle allowing Carlink to be selected as its default
 assistant and routing the steering wheel's short press to that assistant. Long
-press behavior may remain owned by GM's projection or Bluetooth integration.  To enable Carlink2 as the
+press behavior may remain owned by GM's projection or Bluetooth integration.  
+
+To enable Carlink2 as the
 default Digital (Voice) Assistant, go into the Truck's AAOS Settings > Apps > Default Apps > Digital Assistant app.
 Select 'Carlink2' and save.  Now when you short press the steering wheel's voice button,
 it will launch Siri.

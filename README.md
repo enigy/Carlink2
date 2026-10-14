@@ -65,14 +65,14 @@ Numbers in brackets are entries in [documents/revisions.txt](documents/revisions
 - **Background Logo** setting: GMC or CHEVROLET on the connecting screen ([216]).
 
 **Voice**
-- The steering wheel voice button can start Siri, ported from Eric Yanush's work in PR #15. It's on by
-  default and can be turned off in Adapter Configuration → Misc → **Voice Button** ([217]). Choose
-  **Carlink2 Siri** once as the car's default assistant. New, and still being confirmed on the truck.
+- The steering wheel voice button can start Siri, ported from Eric Yanush's work in PR #15. To turn it
+  on, choose **Carlink2 Siri** as the default assistant in the truck's settings ([217], [218]). New,
+  and still being confirmed on the truck.
   See [documents/reference/siri_voice_integration.md](documents/reference/siri_voice_integration.md).
 
 ## Known issues
 
-- ** Voice phone calls are hard to hear for the recipient. Researching audio challenges and echo cancellation options
+- **Voice phone calls are hard to hear for the other person.** Researching audio and echo-cancellation options.
 
 > [!IMPORTANT]
 > My 2025 GMC Sierra with HUD (gminfo3.7, Intel, AAOS) is the target platform and my only hardware
@@ -86,9 +86,9 @@ Numbers in brackets are entries in [documents/revisions.txt](documents/revisions
 > Before reporting audio issues:
 > 1. By default the adapter carries all audio, including the microphone. Unpair the phone and the
 >    vehicle from each other's Bluetooth, and make sure Carlink2 has microphone access.
-> 2. For the steering wheel voice button, use the **Voice Button** setting above. Steering wheel call
->    controls are a system feature: if you need them, skip step 1 and set the in-app audio routing to
->    Bluetooth, so the phone and vehicle stay connected for all audio.
+> 2. For the steering wheel voice button, choose **Carlink2 Siri** as the truck's default assistant
+>    (see What's new). Steering wheel call controls are a system feature: if you need them, skip step 1
+>    and set the in-app audio routing to Bluetooth, so the phone and vehicle stay connected for all audio.
 
 ## Custom adapter firmware
 
@@ -114,7 +114,7 @@ firmware on the adapter. It isn't required, but it gives a more complete, closer
 
 Most changes take effect when you tap **Apply**, which restarts the adapter session in place. GPS
 Forwarding, WiFi Band and Cluster Navigation use **Apply & Restart**, which restarts the app.
-Background Logo and Voice Button apply right away with no reconnect.
+Background Logo applies right away with no reconnect.
 
 ![](/screenshots/adapter_config-Audio.png)
 ![](/screenshots/adapter_confid-Visual.png)

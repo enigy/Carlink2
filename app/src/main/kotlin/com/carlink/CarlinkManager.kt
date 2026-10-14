@@ -20,6 +20,8 @@ import com.carlink.logging.Logger
 import com.carlink.logging.logDebug
 import com.carlink.logging.logError
 import com.carlink.logging.logInfo
+import com.carlink.logging.logNavi
+import com.carlink.logging.logVideoCodec
 import com.carlink.logging.logVideoUsb
 import com.carlink.logging.logWarn
 import com.carlink.media.CarlinkMediaBrowserService
@@ -71,6 +73,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.util.Timer
@@ -107,7 +111,11 @@ import java.util.concurrent.atomic.AtomicReference
  * - Cluster-navigation gating: NAVI_JSON / NAVI_IMAGE are dropped unless
  *   `AdapterConfigPreference.getClusterNavigationSync()` returns true at message time
  *   (read per-message, not cached — see sites in [processMediaMetadata]).
+ *
+ * Central orchestrator for the USB/video/audio/protocol pipelines; size is the cost of keeping
+ * the hot message path in one place. Splitting it risks the working pipeline (see brief).
  */
+@Suppress("LargeClass", "TooManyFunctions")
 class CarlinkManager(
     private val context: Context,
     initialConfig: AdapterConfig = AdapterConfig.DEFAULT,
@@ -126,12 +134,15 @@ class CarlinkManager(
 ) : SiriRequestTarget {
     init {
         NavigationStateManager.initialize(context.applicationContext)
-        // Enable the composer debug PNG dumper so every composed maneuver bitmap is also
-        // written to /sdcard/Android/data/zeno.carlink/files/composer_test/ for offline
-        // eyeball-check via `adb pull`. The pure compose path is unaffected by the dumper —
-        // it's a pass-through side channel triggered from ComposedIconStore.populateFromIap2m.
-        // Strip together with the [NAVI_JSON_RX] debug logging when this stabilizes.
-        com.carlink.navigation.compose.ManeuverIconDebugDumper.enable(context.applicationContext)
+        // DEBUG builds only: the composer PNG dumper writes every composed maneuver bitmap to
+        // <filesDir>/composer_test/ for offline eyeball-check via `adb shell run-as`. It is a
+        // pass-through side channel on ComposedIconStore.debugSink; the compose path itself is
+        // unaffected. Release builds skip it — a 512x512 PNG encode costs tens of ms per icon
+        // on the gminfo37 Atom (same IconComposer thread as the compose), and nothing reads
+        // the files in production. The dumper caps retained session dirs (see its KDoc).
+        if (BuildConfig.DEBUG) {
+            com.carlink.navigation.compose.ManeuverIconDebugDumper.enable(context.applicationContext)
+        }
         // Enable the runtime composer (D16). Without this, lookups return null and the
         // existing static-XML / AA-bitmap paths handle the cluster icon — same behavior as
         // before D16. Turning this ON activates the per-route precompose + cluster icon
@@ -145,7 +156,8 @@ class CarlinkManager(
         // The roundabout WITH_ANGLE refinement (ManeuverMapper) still feeds that enum, but the
         // per-maneuver bitmap compose and the AA-bitmap shim are dead work there — skip both.
         // BEST-EFFORT / UNTESTED detection (no VCUNH1 hardware); harmless elsewhere (default off).
-        val clusterIsEnumOnly = PlatformDetector.detect(context).isVcuCluster()
+        val initPlatformInfo = PlatformDetector.detect(context)
+        val clusterIsEnumOnly = initPlatformInfo.isVcuCluster()
         if (clusterIsEnumOnly) {
             com.carlink.navigation.compose.ComposedIconStore.setBitmapComposeEnabled(false)
             NavigationStateManager.setClusterEnumOnly(true)
@@ -156,6 +168,17 @@ class CarlinkManager(
     private var config: AdapterConfig = initialConfig
 
     companion object {
+        /**
+         * Serializes [start] across ALL CarlinkManager instances in the process. Two starts on
+         * one instance (MainScreen first-composition + onNewIntent + reconnect/restart) would
+         * each open the adapter and the second would overwrite — and leak — the first's live
+         * AdapterDriver. Process-wide rather than per-instance because a released manager's
+         * in-flight start keeps the USB interface claimed until its abort teardown finishes;
+         * the replacement manager's start must not open the adapter before that.
+         * A Mutex (not a monitor) because start() suspends in findDevice/openWithPermission.
+         */
+        private val startMutex = Mutex()
+
         private const val USB_WAIT_PERIOD_MS = 3000L
         private const val PAIR_TIMEOUT_MS = 15000L
 
@@ -486,6 +509,30 @@ class CarlinkManager(
     @Volatile
     private var setCommunicationMode = false
 
+    // ---- start()/stop()/release() guard ----
+    // start() runs on Dispatchers.IO and spends seconds building a session (findDevice,
+    // bridge open, 200 ms settle, AdapterDriver.start's paced init sequence), while stop(),
+    // release(), rebootAdapter() and handleError() can run on the main or USB read thread.
+    // Without a guard, stop() during that window found no driver yet (or raced
+    // AdapterDriver.start against AdapterDriver.stop, leaking the heartbeat timer and read
+    // loop), and start() then left a live AdapterDriver on a stopped/released manager.
+    //
+    // Rule: while [setupInFlight], start() OWNS adapterDriver/usbTransport. Anyone else who wants
+    // the session torn down records [setupAbort] instead of touching them, and start() tears
+    // down what it built when its setup ends (finishSetup). Outside setup, teardown paths
+    // detach both fields atomically so concurrent teardowns never stop/close the same objects.
+    // The lock is only ever held for short non-suspending sections, never across USB init.
+    private val lifecycleLock = Any()
+
+    /** Set once by [release] (under [lifecycleLock]); read unlocked as a fast gate. */
+    @Volatile private var released = false
+
+    private var setupInFlight = false // guarded by lifecycleLock
+    private var setupAbort = SetupAbort.NONE // guarded by lifecycleLock
+
+    /** Teardown requested while start() owned the session; higher ordinal wins on merge. */
+    private enum class SetupAbort { NONE, HARD, GRACEFUL, GRACEFUL_REBOOT }
+
     // Wake lock to prevent CPU sleep during USB streaming
     // PARTIAL_WAKE_LOCK keeps CPU running but allows screen to turn off
     private val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -573,6 +620,13 @@ class CarlinkManager(
     @Volatile private var isSiriAudioActive = false
     @Volatile private var isPhoneCallAudioActive = false
     @Volatile private var isAlertAudioActive = false
+
+    // 0x2C AltVideo focus state — EMULATOR+DEBUG ONLY (every use is gated on
+    // NaviVideoSingleton.enabled, exactly as the rest of the AltVideo path). Driven by the
+    // iPhone's NaviStatus so the 0x2C stream is on only while a route is active:
+    // NaviStatus 1 → 508 (start), NaviStatus 0 → 509 (stop, debounced to absorb reroute churn).
+    @Volatile private var navVideoFocusActive = false
+    private var navVideoOffJob: Job? = null
 
     // GNSS
     private var gnssForwarder: GnssForwarder? = null
@@ -764,7 +818,10 @@ class CarlinkManager(
      * @param surfaceWidth Actual width of the surface in pixels
      * @param surfaceHeight Actual height of the surface in pixels
      * @param callback Callbacks for state changes and events
+     *
+     * Surface/codec/audio/USB bring-up sequence; one ordered path, refactoring risks the pipeline.
      */
+    @Suppress("CyclomaticComplexMethod", "LongMethod")
     fun initialize(
         surface: Surface,
         surfaceWidth: Int,
@@ -787,7 +844,7 @@ class CarlinkManager(
         // Compose layout (systemBars insets apply asynchronously on AAOS).
         if (config.userSelectedResolution) {
             logInfo(
-                "[RES] Using user-selected resolution ${config.width}x${config.height} " +
+                "[RES] Using pinned resolution ${config.width}x${config.height} (user pick or decoder clamp) " +
                     "(surface: ${evenWidth}x$evenHeight)",
                 tag = Logger.Tags.VIDEO,
             )
@@ -934,7 +991,12 @@ class CarlinkManager(
             adapterDriver?.sendCommand(CommandMapping.FRAME)
         }
 
-        // Set CSD extraction callback — persist SPS/PPS for future codec pre-warming
+        // Set CSD extraction callback — persist SPS/PPS for future codec pre-warming (rev 75
+        // pre-stage hook; a documented no-op for the sync-mode codec since rev 98, kept so the
+        // hook survives). H264Renderer only fires this when the SPS/PPS bytes actually CHANGE
+        // (compare-before-copy), and we compare again here before touching SharedPreferences:
+        // CarPlay bundles SPS+PPS with every IDR and the app requests one every 30 s, so without
+        // these guards this was a prefs disk write every 30 s on the feeder thread.
         h264Renderer?.setCsdExtractedCallback { sps, spsLen, pps, ppsLen ->
             val btMac = connectedBtMac ?: return@setCsdExtractedCallback
             val cacheKey = "${btMac}_${config.width}x${config.height}"
@@ -942,10 +1004,17 @@ class CarlinkManager(
 
             val spsData = sps.copyOf(spsLen)
             val ppsData = if (pps != null && ppsLen > 0) pps.copyOf(ppsLen) else ByteArray(0)
+            val spsB64 = android.util.Base64.encodeToString(spsData, android.util.Base64.NO_WRAP)
+            val ppsB64 = android.util.Base64.encodeToString(ppsData, android.util.Base64.NO_WRAP)
+
+            if (prefs.getString("sps_$cacheKey", null) == spsB64 && prefs.getString("pps_$cacheKey", null) == ppsB64) {
+                logVideoCodec { "[DEVICE] CSD unchanged for $cacheKey (SPS=${spsLen}B, PPS=${ppsLen}B) — prefs write skipped" }
+                return@setCsdExtractedCallback
+            }
 
             prefs.edit {
-                putString("sps_$cacheKey", android.util.Base64.encodeToString(spsData, android.util.Base64.NO_WRAP))
-                putString("pps_$cacheKey", android.util.Base64.encodeToString(ppsData, android.util.Base64.NO_WRAP))
+                putString("sps_$cacheKey", spsB64)
+                putString("pps_$cacheKey", ppsB64)
             }
 
             logInfo("[DEVICE] CSD cached for $cacheKey: SPS=${spsLen}B, PPS=${ppsLen}B", tag = Logger.Tags.VIDEO)
@@ -1035,8 +1104,30 @@ class CarlinkManager(
      *   and [createVideoProcessor] which warn-and-drops when `h264Renderer == null`).
      * - If an AdapterDriver already exists, calls [stop] internally before starting fresh,
      *   so it is safe to invoke repeatedly (e.g. after a user "reconnect" tap).
+     *
+     * Connection/handshake state machine; sequential, idempotent startup path.
+     *
+     * Concurrency: serialized process-wide by [startMutex]. A [stop]/[release]/
+     * [rebootAdapter]/[handleError] that lands while setup is in flight does not touch the
+     * half-built session; start() aborts at its next checkpoint and tears down what it built
+     * (see [finishSetup]). After [release], start() is a no-op.
      */
     suspend fun start() {
+        startMutex.withLock {
+            if (released) {
+                logWarn("[LIFECYCLE] start() ignored — manager already released", tag = Logger.Tags.ADAPTR)
+                return
+            }
+            try {
+                startSession()
+            } finally {
+                finishSetup()
+            }
+        }
+    }
+
+    @Suppress("CyclomaticComplexMethod", "LongMethod")
+    private suspend fun startSession() {
         // Guard: Ensure H264Renderer is initialized before starting connection
         // This prevents video data from being discarded when app starts via MediaBrowserService
         // before MainActivity/Surface is ready
@@ -1055,7 +1146,8 @@ class CarlinkManager(
         }
 
         // [209] Don't open an adapter that is rebooting: its re-attach starts the connection
-        // (onUsbDeviceAttached), and scheduleReconnect() holds a fallback retry.
+        // (onUsbDeviceAttached), and scheduleReconnect() holds a fallback retry. Before the
+        // setup claim below: nothing has been built yet, so there is nothing to hand over.
         if (rebootWaitLeftMs() > 0) {
             logInfo("[REBOOT] Adapter restarting — waiting for it to re-attach", tag = Logger.Tags.USB)
             setState(State.DISCONNECTED)
@@ -1063,30 +1155,45 @@ class CarlinkManager(
             return
         }
 
-        setState(State.CONNECTING)
-        setStatusText("Searching for adapter...")
-        resetUnknownCounters()
+        // Claim the session for setup. Atomic with release(): either this whole block (incl.
+        // the CONNECTING dispatch, which starts the FGS + wake lock, and the renderer reset)
+        // completes before release() can set `released` — and release()'s stop() then sees
+        // setupInFlight and defers to us — or release() won and nothing here runs.
+        synchronized(lifecycleLock) {
+            if (released) return
+            setupInFlight = true
+            setupAbort = SetupAbort.NONE
 
-        // Reset video renderer (only if initialized and codec is active).
-        // When codecDeferred=true (fresh init or reconnect), skip reset — the codec
-        // will be started by startCodecIfDeferred() at PLUGGED time with the correct
-        // surface. Calling reset() here would prematurely start the codec before the
-        // surface has stabilized (Compose layout may destroy/recreate the SurfaceView).
-        if (!codecDeferred) {
-            h264Renderer?.reset()
+            setState(State.CONNECTING)
+            setStatusText("Searching for adapter...")
+            resetUnknownCounters()
+
+            // Reset video renderer (only if initialized and codec is active).
+            // When codecDeferred=true (fresh init or reconnect), skip reset — the codec
+            // will be started by startCodecIfDeferred() at PLUGGED time with the correct
+            // surface. Calling reset() here would prematurely start the codec before the
+            // surface has stabilized (Compose layout may destroy/recreate the SurfaceView).
+            if (!codecDeferred) {
+                h264Renderer?.reset()
+            }
         }
 
-        // Initialize audio
-        if (!audioInitialized) {
-            audioInitialized = audioManager?.initialize() ?: false
-            if (audioInitialized) {
-                logInfo("Audio playback initialized", tag = Logger.Tags.AUDIO)
+        // Initialize audio. Under the lock so it cannot interleave with a concurrent stop()/
+        // release() freeing the same DualStreamAudioManager (AudioTracks created after that
+        // release would leak); skipped if a teardown was already requested.
+        synchronized(lifecycleLock) {
+            if (setupAbort == SetupAbort.NONE && !audioInitialized) {
+                audioInitialized = audioManager?.initialize() ?: false
+                if (audioInitialized) {
+                    logInfo("Audio playback initialized", tag = Logger.Tags.AUDIO)
+                }
             }
         }
 
         // Find device
         log("Searching for Carlinkit device...")
         val device = findDevice()
+        if (setupAborted()) return
         if (device == null) {
             logError("Failed to find Carlinkit device", tag = Logger.Tags.USB)
             bridgeNoPermissionSinceMs = 0L
@@ -1101,7 +1208,7 @@ class CarlinkManager(
         setStatusText("Adapter found — opening...")
 
         // AltVideo (USB 0x2C) gate — evaluated each session start (cheap; PlatformDetector
-        // is not cached). Both checks must pass:
+        // caches its codec scan per process). Both checks must pass:
         //   1. BuildConfig.DEBUG — production APKs are bit-identical to pre-feature behavior.
         //   2. PlatformDetector.isAaosEmulator() — Build.PRODUCT starts with "sdk_gcar".
         //      Real GM IHU + Pixel + everything else stays inert. ClusterHomeDisplay
@@ -1127,6 +1234,9 @@ class CarlinkManager(
 
         val transport = openTransport(device) ?: return
         usbTransport = transport
+        // openTransport can suspend on the bridge bind and its permission grace; a stop/release
+        // in that window must not be followed by writes. finishSetup closes the transport.
+        if (setupAborted()) return
         sessionLive.set(true)
 
         // Clear any stale adapter session left by a prior force-kill or crash.
@@ -1147,6 +1257,7 @@ class CarlinkManager(
         //   /Volumes/POTATO/cpc200/20260420/*.log, adapter_tty_215842_20APR26.log:845,
         //   adapter_tty_214729_20APR26.log:4983 (Host-No-Response path).
         Thread.sleep(200)
+        if (setupAborted()) return
 
         // Create video processor for direct USB -> codec data flow
         // This bypasses message parsing for zero-copy performance (DIRECT_HANDOFF)
@@ -1199,6 +1310,9 @@ class CarlinkManager(
 
         setStatusText("Initializing adapter...")
         val initSuccess = adapterDriver?.start(refreshedConfig, initMode.name, pendingChanges, actualSurfaceWidth, actualSurfaceHeight) ?: false
+        // Teardown requested during the paced init sequence: skip the tail (targeted-connect
+        // override, init bookkeeping, pair timer); finishSetup stops the driver it just started.
+        if (setupAborted()) return
 
         // If a targeted connect was requested (user selected a specific device),
         // override the adapter's wifiConnect auto-connect timer with the target MAC.
@@ -1246,6 +1360,85 @@ class CarlinkManager(
                 )
             }
     }
+
+    /** True if a stop/release/reboot/error asked the in-flight start() setup to abort. */
+    private fun setupAborted(): Boolean = synchronized(lifecycleLock) { setupAbort != SetupAbort.NONE }
+
+    /**
+     * End of start()'s setup window (runs in start()'s finally, so also on exceptions and
+     * coroutine cancellation). If a teardown was requested while setup owned the session,
+     * tear down exactly what setup built — AdapterDriver.start and AdapterDriver.stop never
+     * run concurrently on the same driver, because the requester never touched it.
+     */
+    private fun finishSetup() {
+        var driver: AdapterDriver? = null
+        var transport: UsbTransport? = null
+        val abort =
+            synchronized(lifecycleLock) {
+                setupInFlight = false
+                val requested = setupAbort
+                setupAbort = SetupAbort.NONE
+                if (requested != SetupAbort.NONE) {
+                    driver = adapterDriver
+                    transport = usbTransport
+                    adapterDriver = null
+                    usbTransport = null
+                }
+                requested
+            }
+        if (abort == SetupAbort.NONE) return
+
+        logInfo(
+            "[LIFECYCLE] Teardown ($abort) requested during start() setup" +
+                "${if (released) " (manager released)" else ""} — tearing down the half-built session",
+            tag = Logger.Tags.ADAPTR,
+        )
+        sessionLive.set(false)
+        clearPairTimeout()
+        if (abort >= SetupAbort.GRACEFUL) {
+            driver?.sendGracefulTeardown()
+        }
+        if (abort == SetupAbort.GRACEFUL_REBOOT && driver?.rebootAdapter() != true) {
+            // [209] Setup ended before a driver could carry the reboot (or the write failed):
+            // don't wait for a re-attach that won't come.
+            awaitingRebootAttach = false
+            logWarn("[REBOOT] Reboot command not sent during setup — reconnecting instead", tag = Logger.Tags.ADAPTR)
+        }
+        driver?.stop()
+        transport?.close()
+        // The requester already set DISCONNECTED; repeat it in case setup re-published a
+        // state in between (no-op dispatch when unchanged; allowed after release).
+        setState(State.DISCONNECTED)
+    }
+
+    /**
+     * Atomically detach adapterDriver/usbTransport for the caller to tear down. If start() is
+     * mid-setup it owns both: record [mode] for [finishSetup] instead and return null.
+     */
+    private fun detachSessionOrDefer(mode: SetupAbort): Pair<AdapterDriver?, UsbTransport?>? =
+        synchronized(lifecycleLock) {
+            if (setupInFlight) {
+                if (mode > setupAbort) setupAbort = mode
+                null
+            } else {
+                val detached = adapterDriver to usbTransport
+                adapterDriver = null
+                usbTransport = null
+                detached
+            }
+        }
+
+    /** Release session audio atomically with start()'s audio-init section. */
+    private fun releaseSessionAudio(): Boolean =
+        synchronized(lifecycleLock) {
+            if (audioInitialized) {
+                audioManager?.release()
+                audioInitialized = false
+                true
+            } else {
+                false
+            }
+        }
 
     /**
      * Open the adapter through the sideloaded bridge — the only path since [204]; this app
@@ -1397,26 +1590,29 @@ class CarlinkManager(
         stopMicrophoneCapture()
         restoreNormalAudioMode() // never leave the platform stuck in MODE_IN_COMMUNICATION
 
+        // Take the driver/USB device for teardown — or, if start() is mid-setup and owns
+        // them, hand the teardown (incl. the reboot request) to start()'s finishSetup.
+        val detached = detachSessionOrDefer(if (reboot) SetupAbort.GRACEFUL_REBOOT else SetupAbort.GRACEFUL)
+        val driver = detached?.first
+        if (detached == null) {
+            logInfo("[LIFECYCLE] stop() during start() setup — driver/USB teardown deferred to start()", tag = Logger.Tags.ADAPTR)
+        }
+
         // Stop GPS forwarding before stopping adapter (only if forwarder was created)
         if (gnssForwarder != null) {
-            adapterDriver?.sendCommand(CommandMapping.STOP_GNSS_REPORT)
+            driver?.sendCommand(CommandMapping.STOP_GNSS_REPORT)
             gnssForwarder?.stop()
         }
 
         // Graceful teardown: notify adapter before killing connection.
-        // Must happen before adapterDriver?.stop() (send() checks isRunning).
-        adapterDriver?.sendGracefulTeardown(reboot = reboot)
+        // Must happen before driver.stop() (send() checks isRunning).
+        driver?.sendGracefulTeardown(reboot = reboot)
 
-        adapterDriver?.stop()
-        adapterDriver = null
-
-        usbTransport?.close()
-        usbTransport = null
+        driver?.stop()
+        detached?.second?.close()
 
         // Stop audio
-        if (audioInitialized) {
-            audioManager?.release()
-            audioInitialized = false
+        if (releaseSessionAudio()) {
             logInfo("Audio released on stop", tag = Logger.Tags.AUDIO)
         }
 
@@ -1836,6 +2032,21 @@ class CarlinkManager(
         return SiriRequestResult.QUEUED
     }
 
+    /**
+     * Forward the AAOS day/night state to CarPlay mid-session via the night-mode command
+     * (ENABLE_NIGHT_MODE 16 / DISABLE_NIGHT_MODE 17, H→A→P) so CarPlay's own UI follows the head
+     * unit's theme. Pure protocol send — this does NOT affect this app's own Compose theme
+     * ([com.carlink.ui.theme.CarlinkTheme] is always dark). Safe to call anytime — a no-op when
+     * no adapter session is active (adapterDriver is null-checked). Driven by
+     * [com.carlink.ui.MainScreen] off isSystemInDarkTheme(), so it fires when a session reaches
+     * STREAMING and whenever the system theme toggles.
+     */
+    fun setNightMode(night: Boolean) {
+        val cmd = if (night) CommandMapping.ENABLE_NIGHT_MODE else CommandMapping.DISABLE_NIGHT_MODE
+        logInfo("[NIGHT] AAOS night=$night → ${cmd.name}", tag = Logger.Tags.ADAPTR)
+        scope.launch(Dispatchers.IO) { adapterDriver?.sendCommand(cmd) }
+    }
+
     // AA MOVE rate-limit timestamp. carlink_native skips a MOVE send when <17ms
     // elapsed since the previous one. See [AA_TOUCH_THROTTLE_NS] for the full
     // explanation — and the important distinction from AutoKit's use of the same
@@ -1923,20 +2134,18 @@ class CarlinkManager(
         clearPairTimeout()
         stopMicrophoneCapture()
         restoreNormalAudioMode() // never leave the platform stuck in MODE_IN_COMMUNICATION
-        if (adapterDriver?.rebootAdapter() != true) {
+        // Mid-setup, start() owns the driver: it sends DisconnectPhone+CloseDongle+Reboot from
+        // finishSetup instead of the bare 0xCD here, and clears the reboot wait if it can't.
+        val detached = detachSessionOrDefer(SetupAbort.GRACEFUL_REBOOT)
+        if (detached != null && detached.first?.rebootAdapter() != true) {
             // No open session to send it over, or the write failed: don't wait for a re-attach
             // that won't come.
             awaitingRebootAttach = false
             logWarn("[REBOOT] Reboot command not sent — reconnecting instead", tag = Logger.Tags.ADAPTR)
         }
-        adapterDriver?.stop()
-        adapterDriver = null
-        usbTransport?.close()
-        usbTransport = null
-        if (audioInitialized) {
-            audioManager?.release()
-            audioInitialized = false
-        }
+        detached?.first?.stop()
+        detached?.second?.close()
+        releaseSessionAudio()
         codecDeferred = true // Reset for next connection
         currentPhoneType = null
         currentWifi = null
@@ -1963,8 +2172,15 @@ class CarlinkManager(
      * Releases owned subsystems in LIFO order relative to initialization: stop() first (which
      * winds down the session and adapter driver), then H264Renderer, DualStreamAudioManager,
      * MicrophoneCaptureManager, GnssForwarder, MediaSessionManager, finally scope.cancel().
+     *
+     * Safe against an in-flight [start] on Dispatchers.IO and never blocks on it (callers
+     * include the main thread): `released` is set first, so a start() that has not yet
+     * claimed setup returns without touching anything, and one mid-setup sees the abort
+     * recorded by stop() below and tears down the driver/USB device it built itself.
+     * After this, the manager never re-enters an active state (see [setState]).
      */
     fun release() {
+        synchronized(lifecycleLock) { released = true }
         SiriDelegation.registry.detach(this) // [217]
         stop()
 
@@ -2160,7 +2376,10 @@ class CarlinkManager(
      * Compute AA center-crop parameters from the current adapter config.
      * Returns null for CarPlay, 16:9 displays, or when config has no native dims.
      * Uses config.width/height (video surface dims) to match serializeBoxSettings AR calc.
+     *
+     * Aspect-ratio/crop math mirrors serializeBoxSettings; branch-heavy by design.
      */
+    @Suppress("CyclomaticComplexMethod")
     fun getAaCropParams(): AaCropParams? {
         // Use actual surface dims (ground truth from Compose layout), not config dims
         // (which come from WindowMetrics and may differ due to AAOS dock inset behavior).
@@ -2307,6 +2526,11 @@ class CarlinkManager(
         // at non-overlapping lifecycle phases — but the invariant is NOT enforced by the
         // AtomicReference; it's a property of the callers. If a third caller site appears
         // on a different thread, wrap the whole body in a lock.
+        //
+        // A released manager only ever moves to DISCONNECTED: its CONNECTING/active states
+        // would start the process-global connection FGS and this instance's wake lock on
+        // behalf of a dead manager (e.g. a straggling USB-read-thread PLUGGED).
+        if (released && newState != State.DISCONNECTED) return
         val oldState = currentState.getAndSet(newState)
         if (oldState != newState) {
             callback?.onStateChanged(newState)
@@ -2315,11 +2539,14 @@ class CarlinkManager(
     }
 
     private fun setStatusText(text: String) {
+        // Released: the MediaSession is app-scope and shared with the replacement manager —
+        // a straggler's status text must not overwrite its placeholder.
+        if (released) return
         callback?.onStatusTextChanged(text)
         // Mirror status text to MediaSession placeholder so cluster, cardview, and
         // CarMediaApp surfaces all show the same user-facing state the main app UI
         // shows as the adapter transitions through DISCONNECTED → CONNECTING →
-        // DEVICE_CONNECTED phases (Searching for adapter, Initializing, Waiting
+        // DEVICE_CONNECTED phases (Searching for box, Initializing, Waiting
         // for phone, Phone connected, Reconnecting, etc.). Single source of truth.
         //
         // Gate on state != STREAMING — once real CarPlay/AA track metadata is
@@ -2447,7 +2674,9 @@ class CarlinkManager(
         var device: UsbDevice? = null
         var attempts = 0
 
-        while (device == null && attempts < 10) {
+        // setupAborted(): a stop/release during the up-to-30 s poll ends it at the next
+        // iteration instead of holding startMutex (and the replacement manager) for the rest.
+        while (device == null && attempts < 10 && !setupAborted()) {
             device = AdapterDevices.findFirst(usbManager)
 
             if (device == null) {
@@ -2463,6 +2692,9 @@ class CarlinkManager(
         return device
     }
 
+    // Core protocol dispatch: one big switch over message type. Forbidden-to-refactor per brief;
+    // the branching IS the wire protocol.
+    @Suppress("CyclomaticComplexMethod", "LongMethod", "NestedBlockDepth")
     private fun handleMessage(message: Message) {
         // HAZARD: runs on the USB read thread (single-threaded per AdapterDriver contract).
         // Several branches below do synchronous, non-trivial work that technically violates
@@ -2588,33 +2820,13 @@ class CarlinkManager(
                 setState(State.DEVICE_CONNECTED)
                 setStatusText("Phone connected — starting session...")
 
-                // Proactively kick AltVideo (0x2C) streaming — step 1 of the three-step 508
-                // handshake (see RE_Documention/02_Protocol_Reference/video_protocol.md
-                // "Handshake Sequence"). On wireless CarPlay the adapter never initiates with
-                // 508 — it sends only 506 (audio nav focus) — so without this proactive send
-                // the handshake never starts and _AltScreenSetup is never invoked.
-                // Step 3 (echo the adapter's 508 reply) lives in the CommandMessage handler.
-                // Gated on debug+emulator + CarPlay (AA has no 0x2C path).
-                if (com.carlink.ipc.NaviVideoSingleton.enabled &&
-                    (message.phoneType == PhoneType.CARPLAY ||
-                        message.phoneType == PhoneType.CARPLAY_WIRELESS)
-                ) {
-                    scope.launch {
-                        // Small delay lets the adapter finish its post-PLUGGED handshake
-                        // (REQUEST_VIDEO_FOCUS / REQUEST_NAVI_FOCUS arrive ~3-4s after PLUGGED).
-                        // Send 508 after that so the adapter's session-init has set
-                        // g_bSupportNaviScreen and the iPhone has registered featureAltScreen.
-                        delay(2000)
-                        val sent = adapterDriver?.sendCommand(
-                            CommandMapping.REQUEST_NAVI_SCREEN_FOCUS,
-                        ) ?: false
-                        logInfo(
-                            "[NAVI_FWD] Proactive REQUEST_NAVI_SCREEN_FOCUS (508) sent=$sent " +
-                                "— kicking 0x2C AltVideo streaming",
-                            tag = Logger.Tags.VIDEO,
-                        )
-                    }
-                }
+                // AltVideo (0x2C) focus is driven by navigation state, NOT a blind post-PLUGGED
+                // timer: updateNaviVideoFocus() sends 508 (step 1) when NaviStatus→1 and 509 when
+                // NaviStatus→0 (processMediaMetadata's NAVI_JSON branch), so 0x2C streams only
+                // while a route is active. The adapter's 508 reply is still echoed (step 3) by
+                // the CommandMessage handler to complete _AltScreenSetup. naviScreenInfo in
+                // BoxSettings (sent at init) remains the adapter-side enabler. Still
+                // emulator+debug only (gated inside updateNaviVideoFocus on NaviVideoSingleton).
             }
 
             is UnpluggedMessage -> {
@@ -3039,6 +3251,8 @@ class CarlinkManager(
         )
     }
 
+    // Audio command dispatch (play/pause/duck/route by command id); switch mirrors the protocol.
+    @Suppress("CyclomaticComplexMethod", "LongMethod")
     private fun handleAudioCommand(command: AudioCommand, messageDecodeType: Int = 5, rawCommandId: Int = command.id) {
         logDebug(
             "[AUDIO_CMD] ${command.name} (id=${command.id} siri=$isSiriAudioActive call=$isPhoneCallAudioActive alert=$isAlertAudioActive)",
@@ -3332,8 +3546,8 @@ class CarlinkManager(
 
     // DEBUG helper: emit a possibly-long iAP2 hex string across multiple log lines so the
     // full payload survives logcat's per-line ~4000 char cap. Single short strings fit in
-    // one line. Strip together with processMediaMetadata's [NAVI_JSON_RX] block before
-    // production release.
+    // one line. Runs on the USB read thread, so every string is built lazily via logNavi {}
+    // — a no-op unless debug logging and the NAVI tag are both enabled (release: never).
     private fun logIap2Field(
         name: String,
         hex: String,
@@ -3341,19 +3555,71 @@ class CarlinkManager(
         val chunkSize = 3500
         val total = (hex.length + chunkSize - 1) / chunkSize
         if (total <= 1) {
-            logInfo("[NAVI_JSON_RX:$name len=${hex.length}] $hex", tag = Logger.Tags.NAVI)
+            logNavi { "[NAVI_JSON_RX:$name len=${hex.length}] $hex" }
             return
         }
         for (i in 0 until total) {
             val s = i * chunkSize
             val e = minOf(s + chunkSize, hex.length)
-            logInfo(
-                "[NAVI_JSON_RX:$name len=${hex.length} chunk=${i + 1}/$total] ${hex.substring(s, e)}",
-                tag = Logger.Tags.NAVI,
-            )
+            logNavi { "[NAVI_JSON_RX:$name len=${hex.length} chunk=${i + 1}/$total] ${hex.substring(s, e)}" }
         }
     }
 
+    /**
+     * Drive the 0x2C AltVideo focus (508/509) from the iPhone's navigation state, so the stream
+     * runs only while a route is active instead of for the whole CarPlay session.
+     *
+     * EMULATOR+DEBUG ONLY: short-circuits unless [com.carlink.ipc.NaviVideoSingleton.enabled]
+     * (== BuildConfig.DEBUG && PlatformDetector.isAaosEmulator()) — production APKs never reach
+     * sendCommand here, identical to the rest of the AltVideo path.
+     *
+     * Verified adapter behaviour (live capture, Apple Maps route): the adapter emits NaviJSON
+     * NaviStatus=1 at route start (with dest/ETA) and NaviStatus=0 at route end; 2 = calculating.
+     * We send 508 on the 0→1 edge and 509 on the 1→0 edge. The OFF is debounced so a brief
+     * reroute dip (1→0/2→1) doesn't tear the stream down and back up.
+     *
+     * @param naviStatus rounded NaviJSON NaviStatus (1 active, 0 idle/ended, 2 calculating).
+     */
+    private fun updateNaviVideoFocus(naviStatus: Int) {
+        if (!com.carlink.ipc.NaviVideoSingleton.enabled) return
+        when (naviStatus) {
+            1 -> {
+                // Route active: cancel any pending stop and start streaming if not already on.
+                navVideoOffJob?.cancel()
+                navVideoOffJob = null
+                if (!navVideoFocusActive) {
+                    navVideoFocusActive = true
+                    val sent = adapterDriver?.sendCommand(CommandMapping.REQUEST_NAVI_SCREEN_FOCUS) ?: false
+                    logInfo(
+                        "[NAVI_FWD] Navigation started (NaviStatus=1) — sent REQUEST_NAVI_SCREEN_FOCUS (508) sent=$sent",
+                        tag = Logger.Tags.VIDEO,
+                    )
+                }
+            }
+            0 -> {
+                // Route idle/ended: debounce the stop to absorb reroute churn; cancel if it
+                // returns to 1 (handled in the branch above) before the delay elapses.
+                if (navVideoFocusActive && navVideoOffJob == null) {
+                    navVideoOffJob = scope.launch {
+                        delay(2500)
+                        navVideoFocusActive = false
+                        navVideoOffJob = null
+                        val sent = adapterDriver?.sendCommand(CommandMapping.RELEASE_NAVI_SCREEN_FOCUS) ?: false
+                        com.carlink.ipc.NaviVideoSingleton.forwarder.onStreamStop()
+                        logInfo(
+                            "[NAVI_FWD] Navigation ended (NaviStatus=0) — sent RELEASE_NAVI_SCREEN_FOCUS (509) " +
+                                "sent=$sent + stopped forwarder",
+                            tag = Logger.Tags.VIDEO,
+                        )
+                    }
+                }
+            }
+            // 2 (calculating) / anything else: no transition.
+        }
+    }
+
+    // Media metadata assembly from wire fields; many optional fields → high branch count by design.
+    @Suppress("CyclomaticComplexMethod", "LongMethod")
     private fun processMediaMetadata(message: MediaDataMessage) {
         // Route NaviJSON to NavigationStateManager for cluster display (only if enabled)
         if (message.type == MediaType.NAVI_JSON) {
@@ -3362,19 +3628,34 @@ class CarlinkManager(
             // ~3KB for 0x5202 maneuver bursts) is emitted on its own log line and chunked at
             // 3500 chars to stay under Android's per-line logcat limit (~4000). Decoder-side
             // re-assembly: concatenate all "[NAVI_JSON_RX:_iap2m] chunk=N/M payload=..." lines
-            // for the same timestamp. Strip before production-grade release.
-            val keys = message.payload.keys.sorted()
-            // Dump primitive Navi* values (skip _iap2/_iap2m which are huge hex — those go on
-            // their own chunked lines below). Lets us correlate per-step events against the
-            // 0x5202 maneuver list during the cursor-walk-matcher design pass.
-            val naviPrimitives = message.payload
-                .filterKeys { it.startsWith("Navi") }
-                .entries
-                .joinToString(", ") { (k, v) ->
-                    val s = v.toString()
-                    "$k=${if (s.length > 80) s.take(80) + "…" else s}"
-                }
-            logInfo("[NAVI_JSON_RX] keys=$keys${if (naviPrimitives.isNotEmpty()) " | $naviPrimitives" else ""}", tag = Logger.Tags.NAVI)
+            // for the same timestamp.
+            // This runs on the USB read thread (which also reads video), so the key sort,
+            // the Navi* primitive dump and the hex chunking are all built inside logNavi {}
+            // lambdas — zero cost unless debug logging + the NAVI tag are enabled.
+            logNavi {
+                val keys = message.payload.keys.sorted()
+                // Dump primitive Navi* values (skip _iap2/_iap2m which are huge hex — those go
+                // on their own chunked lines below). Lets us correlate per-step events against
+                // the 0x5202 maneuver list.
+                val naviPrimitives = message.payload
+                    .filterKeys { it.startsWith("Navi") }
+                    .entries
+                    .joinToString(", ") { (k, v) ->
+                        val s = v.toString()
+                        "$k=${if (s.length > 80) s.take(80) + "…" else s}"
+                    }
+                "[NAVI_JSON_RX] keys=$keys${if (naviPrimitives.isNotEmpty()) " | $naviPrimitives" else ""}"
+            }
+            // NOTE: getClusterNavigationSync() is read at message time, NOT cached —
+            // a user toggling cluster navigation in AdapterConfigurationDialog takes effect
+            // on the next NAVI_* message, no restart needed. Read once per message here and
+            // shared by the composer gate and the NavigationStateManager gate below.
+            val clusterNavEnabled = AdapterConfigPreference.getInstance(context).getClusterNavigationSync()
+            // Gate the 0x2C AltVideo stream on the route state (508 on start / 509 on end).
+            // No-op off the emulator+debug gate. NaviStatus arrives as a float (e.g. 1.0000002).
+            (message.payload["NaviStatus"] as? Number)?.let {
+                updateNaviVideoFocus(kotlin.math.round(it.toDouble()).toInt())
+            }
             // v6.1: parse raw 0x5201 RouteGuidanceUpdate for the wire cursor + state and
             // feed NavigationStateManager BEFORE onNaviJson runs (same USB read thread).
             // Set null on absent _iap2 OR parse failure to prevent stale-cursor reuse —
@@ -3392,20 +3673,19 @@ class CarlinkManager(
                 logIap2Field("_iap2m", iap2m)
                 // Populate the runtime icon composer cache. Parses the burst synchronously
                 // (cheap) on this USB read thread, then dispatches the per-maneuver
-                // compose+render to a background worker so it never blocks video reads.
-                // Per-step events later call ComposedIconStore.lookup (static fallback until
-                // the background fill completes). Gated by ComposedIconStore.enabled — when
-                // off, lookup returns null and the static-XML / AA-bitmap paths handle the
-                // cluster icon. See app/src/main/kotlin/com/carlink/navigation/compose/.
+                // compose+render to the IconComposer background worker so it never blocks
+                // video reads (rev 139). Per-step events later call ComposedIconStore.lookup
+                // (static fallback until the background fill completes). Gated by
+                // ComposedIconStore.enabled — when off, lookup returns null and the static-XML /
+                // AA-bitmap paths handle the cluster icon. Upstream's [155] compose deferral
+                // (cluster navigation off) is not taken: it needs upstream's ComposedIconStore,
+                // and this fork keeps its own navigation package ([199]-[203]).
                 val dispatched = com.carlink.navigation.compose.ComposedIconStore.populateFromIap2m(iap2m)
                 if (dispatched != null) {
-                    logInfo("[NAVI_JSON_RX] Composer dispatched $dispatched maneuvers for background compose", tag = Logger.Tags.NAVI)
+                    logNavi { "[NAVI_JSON_RX] Composer dispatched $dispatched maneuvers for background compose" }
                 }
             }
-            // NOTE: getClusterNavigationSync() is read at message time, NOT cached —
-            // a user toggling cluster navigation in AdapterConfigurationDialog takes effect
-            // on the next NAVI_* message, no restart needed.
-            if (AdapterConfigPreference.getInstance(context).getClusterNavigationSync()) {
+            if (clusterNavEnabled) {
                 NavigationStateManager.onNaviJson(message.payload)
             }
             return
@@ -3668,18 +3948,16 @@ class CarlinkManager(
         val audioModeDoneMs = android.os.SystemClock.elapsedRealtime()
 
         // Stop adapter driver (heartbeat, reading loop) and close USB.
-        // Skip graceful teardown — USB is likely dead.
-        adapterDriver?.stop()
-        adapterDriver = null
+        // Skip graceful teardown — USB is likely dead. Mid-setup (incl. the synchronous
+        // "USB device not opened" error from inside AdapterDriver.start), start() owns the
+        // driver and tears it down in finishSetup.
+        val detached = detachSessionOrDefer(SetupAbort.HARD)
+        detached?.first?.stop()
         val driverDoneMs = android.os.SystemClock.elapsedRealtime()
-        usbTransport?.close()
-        usbTransport = null
+        detached?.second?.close()
         val transportDoneMs = android.os.SystemClock.elapsedRealtime()
 
-        if (audioInitialized) {
-            audioManager?.release()
-            audioInitialized = false
-        }
+        releaseSessionAudio()
         val audioDoneMs = android.os.SystemClock.elapsedRealtime()
 
         // Per-step timing, so a slow teardown (the 46 s one above) names its culprit next time.
@@ -3754,6 +4032,10 @@ class CarlinkManager(
     private fun scheduleReconnect() {
         // Cancel any existing reconnect attempt
         reconnectJob?.cancel()
+
+        // A released manager's scope is cancelled (the job below would never run), but the
+        // startConnectionForeground call below would still start the process-global FGS.
+        if (released) return
 
         // Screen-power gate: while the head unit display is OFF (truck off), do NOT keep
         // retrying/opening the adapter — that's what produced the endless reconnect + USB

@@ -50,6 +50,8 @@ internal object ManeuverComposer {
      *   specific than anything composed here. ComposedIconStore then stores no bitmap and
      *   ManeuverMapper shows that drawable.
      */
+    // Selects/composes a maneuver icon by type; branch count = the icon-selection table.
+    @Suppress("CyclomaticComplexMethod")
     fun compose(data: Iap2ManeuverData): ComposedIcon? {
         val cp = data.cpManeuverType
         return when (cp) {

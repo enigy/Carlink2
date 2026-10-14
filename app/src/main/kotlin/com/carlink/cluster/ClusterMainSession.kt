@@ -236,6 +236,8 @@ class ClusterMainSession : Session() {
         }
     }
 
+    // Translates navigation state into NavigationManager Trip updates; branch count = state cases.
+    @Suppress("CyclomaticComplexMethod", "LongMethod")
     private fun processStateUpdate(state: NavigationState) {
         val navManager = navigationManager
         if (navManager == null) {

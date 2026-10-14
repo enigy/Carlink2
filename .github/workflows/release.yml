@@ -1,0 +1,156 @@
+name: Release
+
+# Builds the Play bundle (AAB) for com.enigy.carlink2 and the sideloaded USB bridge APK,
+# both signed with the upload key; uploads the AAB to Google Play; attaches the AAB and the
+# bridge APK to a GitHub Release.
+#
+# Triggers
+#   - Push a tag vNNN, where NNN == appVersionCode in app/build.gradle.kts (== the
+#     revisions.txt [NNN] entry): build, upload to the Internal testing track, GitHub Release.
+#   - Actions → Release → Run workflow: choose the track, or untick "Upload" to only build
+#     (the files are kept as a workflow artifact).
+#   Play rejects a versionCode it has already seen, so bump appVersionCode before each upload.
+#
+# Secrets (Settings → Secrets and variables → Actions → Secrets)
+#   CARLINK_KEYSTORE_BASE64    base64 of the upload keystore:  base64 -i upload.jks | pbcopy
+#   CARLINK_KEYSTORE_PASSWORD  keystore (store) password
+#   CARLINK_KEY_ALIAS          key alias inside the keystore
+#   CARLINK_KEY_PASSWORD       password for that key
+#   PLAY_SERVICE_ACCOUNT_JSON  JSON key of a Google Cloud service account that Play Console
+#                              (Users and permissions) lets release Carlink2
+# Variable (… → Variables), optional
+#   CARLINK2_CALLER_CERTS      the bridge's caller pin, same as -Pcarlink2.callerCerts locally:
+#                              Play's "App signing key certificate" SHA-256. Unset = the bridge
+#                              checks the caller's package name only.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      track:
+        description: Play track
+        type: choice
+        options:
+          - internal
+          - alpha
+          - beta
+          - production
+        default: internal
+      upload:
+        description: Upload the AAB to Google Play
+        type: boolean
+        default: true
+
+permissions:
+  contents: write # create the GitHub Release and attach its files
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      # Overrides the root build.gradle.kts redirect (~/.cache/gradle-builds, the iCloud
+      # workaround) so the outputs are easy to find here.
+      BUILD_ROOT: ${{ github.workspace }}/build-out
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Bootstraps Gradle; gradle-daemon-jvm.properties then provisions the daemon JVM.
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # The runner image's SDK can lag behind compileSdk 37.
+      - name: Install Android SDK packages
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37.0" "platforms;android-36" "build-tools;37.0.0" > /dev/null
+
+      - name: Check the tag matches versionCode
+        if: github.ref_type == 'tag'
+        run: |
+          code=$(sed -n 's/^ *val appVersionCode = \([0-9][0-9]*\)$/\1/p' app/build.gradle.kts)
+          if [ "v$code" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match appVersionCode $code in app/build.gradle.kts"
+            exit 1
+          fi
+
+      # app and bridge both read keystore.properties (gitignored; the runner is discarded).
+      - name: Write signing config
+        env:
+          KEYSTORE_B64: ${{ secrets.CARLINK_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.CARLINK_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CARLINK_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.CARLINK_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then echo "::error::CARLINK_KEYSTORE_BASE64 is not set"; exit 1; fi
+          echo "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/upload.jks"
+          # .properties treats a backslash as an escape; double any in the passwords.
+          esc() { printf '%s' "$1" | sed 's/\\/\\\\/g'; }
+          {
+            echo "storeFile=$RUNNER_TEMP/upload.jks"
+            echo "storePassword=$(esc "$STORE_PASSWORD")"
+            echo "keyAlias=$(esc "$KEY_ALIAS")"
+            echo "keyPassword=$(esc "$KEY_PASSWORD")"
+          } > keystore.properties
+
+      - name: Build AAB and bridge APK
+        env:
+          CALLER_CERTS: ${{ vars.CARLINK2_CALLER_CERTS }}
+        run: >
+          ./gradlew :app:bundleRelease :bridge:assembleRelease
+          -Pcarlink.buildRoot="$BUILD_ROOT"
+          -Pcarlink2.callerCerts="$CALLER_CERTS"
+
+      - name: Collect outputs
+        id: out
+        run: |
+          code=$(sed -n 's/^ *val appVersionCode = \([0-9][0-9]*\)$/\1/p' app/build.gradle.kts)
+          bridge=$(sed -n 's/^ *versionName = "\(.*\)"$/\1/p' bridge/build.gradle.kts)
+          mkdir -p dist
+          cp "$BUILD_ROOT/app/outputs/bundle/release/app-release.aab" "dist/carlink2-v$code.aab"
+          cp "$BUILD_ROOT/bridge/outputs/apk/release/bridge-release.apk" "dist/carlink2_bridge-$bridge.apk"
+          cp "$BUILD_ROOT/app/outputs/mapping/release/mapping.txt" "dist/mapping-v$code.txt"
+          echo "aab=dist/carlink2-v$code.aab" >> "$GITHUB_OUTPUT"
+          echo "mapping=dist/mapping-v$code.txt" >> "$GITHUB_OUTPUT"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          (cd dist && sha256sum ./*.aab ./*.apk)
+
+      - name: Keep the files as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: carlink2-v${{ steps.out.outputs.code }}
+          path: dist/
+
+      # A tag push always uploads to Internal testing; a manual run uploads only if asked.
+      # status=completed fails while the app has never been rolled out on any track (Play
+      # then only accepts drafts); after the first rollout it publishes to the track's testers.
+      - name: Upload to Google Play
+        if: github.event_name == 'push' || inputs.upload
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: com.enigy.carlink2
+          releaseFiles: ${{ steps.out.outputs.aab }}
+          mappingFile: ${{ steps.out.outputs.mapping }}
+          track: ${{ inputs.track || 'internal' }}
+          status: completed
+
+      - name: Publish GitHub Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.aab
+            dist/*.apk
+          fail_on_unmatched_files: true
+          generate_release_notes: true

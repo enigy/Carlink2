@@ -1,154 +1,177 @@
 # Carlink2
 
-Carlink2 is enigy's two-app build of Carlink for the GM gminfo3.7 head unit (based on
-[lvalen91/carlink](https://github.com/lvalen91/carlink), split approach from
-[PR #15](https://github.com/lvalen91/carlink/pull/15)). It ships as two APKs that work as one:
+Carlink2 is enigy's two-app build of Carlink for the GM gminfo3.7 head unit. It's a native Kotlin
+app based on [lvalen91/carlink](https://github.com/lvalen91/carlink), using the two-app split from
+Eric Yanush's [PR #15](https://github.com/lvalen91/carlink/pull/15). The two APKs work as one:
 
 | App | Package | Installed via | Owns |
 |---|---|---|---|
-| Display | `com.enigy.carlink2` | Google Play (required — Play installs keep the screen while driving) | All UI, CarPlay/AA protocol, video, audio, cluster session |
-| Bridge | `android.car.usb.handler` | Sideload (USB drive) | The adapter's USB connection and the cluster icon provider |
+| Display | `com.enigy.carlink2` | Google Play (required: only Play installs keep the screen while driving) | All UI, CarPlay/AA protocol, video, audio, cluster session |
+| USB bridge | `android.car.usb.handler` | Sideload from a USB drive | The adapter's USB connection and the HUD icon provider |
 
-The bridge takes the package name AAOS hands every USB attach to, so it gets USB permission
-without the dialog, and it claims the Templates Host icon authority Play won't give a fork, so
-HUD maneuver icons render. Details, install order and diagnostics:
+GM's head unit hands every USB device to an app named `android.car.usb.handler`, so the bridge gets
+USB permission without the usual dialog. It also hosts the HUD icon provider that Play won't give a
+fork, so maneuver icons show on the HUD. Details and diagnostics:
 [documents/reference/carlink2_bridge.md](documents/reference/carlink2_bridge.md).
 
-To install the bridge app, you will either need to use ADB (difficult) or clone and deploy the AAOS File Launcher app.  See https://github.com/muzso/fileslauncher for the process.
+## Requirements
 
+- [Carlinkit CPC200-CCPA](https://www.carlinkit.com/ccpa) adapter on firmware 2025.10
+- AAOS 10 or later. Developed and tested only on the gminfo3.7 (AAOS 12)
+- A USB drive to install the bridge
 
----
+## Install
 
-Carlink is a **native** Kotlin code implementation from the original [Flutter-based](https://github.com/lvalen91/Carlink) app.
+1. If the old sideloaded Carlink (`com.enigy.carlink`) is installed, uninstall it first. It claims
+   the same HUD icon provider, and Android won't install the bridge alongside it.
+2. Install Carlink2 from Google Play. <!-- TODO: Play link -->
+3. Copy [`app/carlink2_bridge.apk`](app/carlink2_bridge.apk) (bridge 1.0.2) to a USB drive.
+   SHA-256: `aff977cc82806016a1401d182cc0f0ce88c711c16aca66ef7c4db613e879079c`
+4. While parked, open Carlink2. It shows **USB bridge not installed** with an **Open Files** button
+   that opens the head unit's hidden Files app. Open the drive and tap the APK. If asked, allow Files
+   to install apps.
+5. When the install finishes, tap the Carlink2 notification (or press Home and open Carlink2).
+   Carlink2 connects once you're back.
+6. If the adapter was already plugged in, the bridge may show a one-time USB permission prompt.
+   Tap Allow, or unplug and replug the adapter.
 
-### Requirments
+`adb install` works for the bridge too.
 
-- For AAOS 10 (Android 10) and higher
-- For (Carlinkit CPC200-CCPA)[https://www.carlinkit.com/ccpa] on firmware 2025.10
+## What's new in Carlink2
 
+Numbers in brackets are entries in [documents/revisions.txt](documents/revisions.txt).
 
-## [XDA Developer Forums](https://xdaforums.com/t/carlink.4774308/)
+**Connection**
+- No USB permission dialog: the bridge owns the adapter, and Carlink2 never touches USB itself ([200], [204]).
+- An adapter that was plugged in while the head unit booted no longer gets stuck without permission.
+  The adapter re-plugs itself shortly after boot, which gives the bridge permission silently; if that
+  doesn't happen, the bridge asks once ([205], [208]).
+- **Reset Device** now actually reboots the adapter, which takes about a minute ([209]).
+- When a wireless CarPlay phone never starts its session (for example, another iPhone grabbed the
+  adapter's Wi-Fi first), Carlink2 reboots the adapter by itself instead of sitting on "Phone rejected
+  configuration" ([209]).
+- Disconnects are handled once, off the UI thread, with one quick retry when the phone isn't found ([206]).
+- Setup help for new installs: a missing-bridge panel with **Open Files**, a notification that leads
+  back from Files, and a **USB bridge isn't starting** panel with an App info shortcut ([210]–[212]).
 
+**HUD and cluster navigation**
+- Turn icons are twice as large, no longer flicker, and are all the same size ([201], [202]).
+- Icons are drawn from the junction Apple sends, with the real exit angle and side roads ([203]).
+- Navigation no longer drops off the HUD about 650–700 ft before the destination ([207]).
+- The HUD's text and icon stay in step with the phone after a reconnect mid-route ([213]).
 
-## Work In progress - Something is always changing.. Not always good
+**Display**
+- No more flash of the system bars, widget panel or a black screen when the phone connects ([214], [215]).
+- **Background Logo** setting: GMC or CHEVROLET on the connecting screen ([216]).
+
+**Voice**
+- The steering wheel voice button can start Siri, ported from Eric Yanush's work in PR #15. It's on by
+  default and can be turned off in Adapter Configuration → Misc → **Voice Button** ([217]). Choose
+  **Carlink2 Siri** once as the car's default assistant. New, and still being confirmed on the truck.
+  See [documents/reference/siri_voice_integration.md](documents/reference/siri_voice_integration.md).
+
+## Known issues
+
+- ** Voice phone calls are hard to hear for the recipient. Researching audio challenges and echo cancellation options
 
 > [!IMPORTANT]
->
-> Limitations
-> Instrument Panel Cluster and Heads Up Display (HUD) Support
->
-> Song Information:
-> Due to an AAOS bug. Song metadata displaying on the Cluster can go blank. The simplified explanation, the App creates a session 'token' and hands it to the OS. The Native Media Player and the Cluster both read song info from it. The boot/auto-launch, head unit reboot, and adapter config-change cases have been fixed, so those now repopulate the Cluster card correctly. The one case still left is force-stopping the app and relaunching it: the OS-side CarLauncher controller is nulled when the session is destroyed and never rebound (an AOSP limitation), so the Cluster keeps holding the dead controller and goes blank. There are no known ways for third-party apps to fix that last case. Emulator testing shows Apple Music and Spotify hit the same stale card, confirming it's a platform limitation, not app-side.
->
-> Navigation Turn-By-Turn
-> On STOCK adapter firmware, the firmware strips away the rich nav details iPhones provide and narrows it down to basic manuvers. The custom adapter firmware (see below) restores full iAP2 route information, so CarPlay now gets complete maneuver/route data. CarPlay itself does not send ready-made navigation icons, so the app generates them on-device from the recovered iAP2 geometry (including correct roundabouts drawn from the real junction arms). Android Auto does provide manuver images, which are forwarded to the cluster. They are more detailed and accurate.
->
-> Vehicles running the GM VCU radio (Bosch VCUNH1 — most EVs and newer Fuel/ICE vehicles) on GM AAOS 14+ do not use any icon provided by the app. GM VMSPlugin still passes them, but the Cluster ECU ignores it and renders from its own internal icon set based on the manuver type (VMSPlugin's setManeuverType() enum forces the GM glyph). Earlier VCU vehicles on AAOS 12 or 13 may have behaved differently before being upgraded.
-
-> [!TIP]
-Before complaining about Audio issues.
-> 1. Disconnect and forget the Phone and Vehicle from each others Bluetooth. The adapter defaults to audio routing THROUGH the adapter for both microhone input and audio output. Make sure you allowed microphone access to the app.
-> 2. Steering Wheel Voice/Call Control doesn't work. That is a system-level app feature and this is not that. If you want Steering Wheel Voice Controls, then ignore #1 and set the in-app adapter audio routing to Bluetooth. THe Phone and Vehicle will stay connected for ALL audio related events.
-
-> [!IMPORTANT]
->My 2025 GMC Sierra w/HUD gminfo3.7 Intel AAOS radio is the target Platform and my only hardware for testing. 
+> My 2025 GMC Sierra with HUD (gminfo3.7, Intel, AAOS) is the target platform and my only hardware
+> for testing. My phone is an iPhone, so CarPlay has had the most tuning.
 
 > [!WARNING]
-> *Compatability on anything else is not verified* and should be treated as **untested**. Optimized for Video and Audio performance on the gminfo3.7. That is **my only focus** you can fork this repo and optimize it for your own needs.
+> Compatibility with anything else is **untested**. Carlink2 is tuned for video and audio performance
+> on the gminfo3.7, which is my only focus. Feel free to fork it and tune it for your own setup.
 
 > [!TIP]
-Remember kids: (mostly me)
->
->Projection streams are live UI state, not video playback.
-Do not buffer, pace, preserve, or “play” frames.
-Late frames must be dropped. Corruption must trigger reset.
->
->CarPlay / Android Auto h264 is not media.
-It is a real-time projection of UI state.
-Correctness is defined by latency, not completeness.
-Buffers create corruption. Queues create lies.
->
->Video is a best-effort, disposable representation of UI state.
-Audio is a continuous time signal that must never stall.
-Video may drop. Audio may buffer. Neither may block the other
+> Before reporting audio issues:
+> 1. By default the adapter carries all audio, including the microphone. Unpair the phone and the
+>    vehicle from each other's Bluetooth, and make sure Carlink2 has microphone access.
+> 2. For the steering wheel voice button, use the **Voice Button** setting above. Steering wheel call
+>    controls are a system feature: if you need them, skip step 1 and set the in-app audio routing to
+>    Bluetooth, so the phone and vehicle stay connected for all audio.
 
-> [!IMPORTANT]
-> Adapter-SIde Binaries were patched to correct to problems and require use of custom firmware on the adapter itself.
-> 1. Carlinkit Stripped away rich iAP2 navigation data rcvd from iPhone, that has been corrected in custom firmware. Full iAP2 route information is now forwarded and rcvd.
-> 2. Carlinkit AndroidAuto incorrectly parsed rcvd Vehicle GPS NMEA when app forwarded to Phone. That is now patched so correct and accura NMEA is rcvd by Android Phone.
->
-> Custom adapter firmware for complete/correct Carplay Route information and Correct GPS-Forwarding support on Android Auto. While not necessary to have, it provides a better and closer to stock experience if you do load.
+## Custom adapter firmware
 
-```
-Video:
-- Represents live UI state
-- Late == invalid
-- Drop aggressively
-- Reset on corruption
-- Never wait
+Two adapter programs were patched to fix problems in Carlinkit's firmware. These patches need custom
+firmware on the adapter. It isn't required, but it gives a more complete, closer-to-stock experience.
 
-Audio:
-- Represents continuous time
-- Late == fill
-- Buffer aggressively
-- Never stall
-- Never block video
-```
+1. Carlinkit's firmware strips the rich iAP2 navigation data the iPhone sends. The patch forwards the
+   full route information, which the app uses to draw HUD turn icons, including roundabouts drawn
+   from the real junction arms. CarPlay doesn't send ready-made icons; Android Auto does, and those are
+   forwarded to the cluster as-is.
+2. Carlinkit's Android Auto program mis-parsed the vehicle GPS (NMEA) that the app forwards to the
+   phone. The patch fixes it so Android phones receive accurate GPS.
 
-
-> [!IMPORTANT]
-> My Primary smartphone is an iPhone and therefor Carplay has gotten the most tuning and testing.
-
-## Screen Shots from Android Emulator with USB-PassThrough for CPC200-CCPA Use
+## Screenshots (Android emulator with USB passthrough to the CPC200-CCPA)
 
 ![Screenshot of Android Auto via Adapter from Pixel 10](/screenshots/Aauto.png)
-![Screenshot of Apple Carplay via Adapter from iPhone Air](/screenshots/Carplay.png)
+![Screenshot of Apple CarPlay via Adapter from iPhone Air](/screenshots/Carplay.png)
 
-## Main App UI/Page
+### Main app screen
 ![Screenshot of Main App Screen](/screenshots/MainPage.png)
 
-## Adapter Configuaration Options
+### Adapter configuration
 
-These options can be set for user preferance, but will require an adapter reboot upon tapping 'Apply & Restart'
+Most changes take effect when you tap **Apply**, which restarts the adapter session in place. GPS
+Forwarding, WiFi Band and Cluster Navigation use **Apply & Restart**, which restarts the app.
+Background Logo and Voice Button apply right away with no reconnect.
 
 ![](/screenshots/adapter_config-Audio.png)
 ![](/screenshots/adapter_confid-Visual.png)
 ![](/screenshots/adapter_config-Misc.png)
 
-## App specific Setting
+### Display mode
 
-Controls what is hidden or shown to allow more space for the Carlink app to configure and render the Projection UI Stream.
+Controls which system bars are shown or hidden, to give the projection more room.
 
 ![](/screenshots/Settings-DisplayMode.png)
 
-### App Logging to File Export
+### Exporting logs
 
-If enabled allows exporting app logs to a file. Uses the createDocument function so the native android documents app (files) must be installed. THis bypasses the need for the app and third-party file browsers needing permission to access various folders. You can save directly to an attached USB. 
+When file logging is on, you can export the app's logs to a file. Export uses Android's built-in Files
+app (the document picker), so Carlink2 doesn't need permission to your folders, and you can save
+straight to a USB drive.
 
 > [!CAUTION]
->OS restrictions will apply.
+> OS restrictions apply.
 
 ![](/screenshots/File_Logging.png)
 
-### Log Levels
+### Log levels
 
-Due to how verbose and active this app can be. Espically regarding troubleshooting (the more the information the easier to diagnose). Various log levels are available to help narrow down and focus on the needed areas.
+The app is very verbose, and more information makes troubleshooting easier. Log levels let you focus
+on the areas you need.
 
 ![](/screenshots/LogLevels.png)
 
 # Documentation
 
-I, or mostly CLAUDE, have tried to collect and organize as much documentation as I can in regards to every aspect of this app, adapter, gminfo etc. To not only help me better understand, but others as well. If updates come across without code changes. It's likely new documentation or corrections.
+I, or mostly Claude, have collected and organized as much documentation as I can about the app, the
+adapter and the gminfo, to help me and others understand them. Commits with no code changes are usually
+new documentation or corrections.
 
 > [!IMPORTANT]
-> I cannot speak for all information to be accurate and free of errors, but its the most detailed and centralized source of information you will likely find anywhere else. Unless you have direct access to the source code of the Adapter itself, GM Radios etc... If you do, i know a guy and a site who will glady take it and publish it anonymously. 
+> I can't promise all of it is accurate, but it's the most detailed, centralized source you'll likely
+> find without access to the adapter's or GM's source code. If you have that access, I know a guy and a
+> site who will gladly publish it anonymously.
 
-Most of your questions are likly answered in [Carlink Documents](/documents/reference/), but reach out on the XDA Forum. Issues use github to report it or the forum as well.
+Most questions are answered in [documents/reference](/documents/reference/). Good starting points:
+- [carlink2_bridge.md](documents/reference/carlink2_bridge.md): the two-app design, install and diagnostics
+- [siri_voice_integration.md](documents/reference/siri_voice_integration.md): the voice button
+- [revisions.txt](documents/revisions.txt): every build and what changed
 
-# Repos that provided stepping stones and foundations for this app:
+Ask on the [XDA thread](https://xdaforums.com/t/carlink.4774308/), and report issues on GitHub or XDA.
 
-- [Carplay by Ivalen91](https://github.com/lvalen91/carlink) - Carplay(_native) Kotlin port, source of this fork.
-- [Carplay by Abuharsky](https://github.com/abuharsky/carplay) - Original Android implementation
-- [Node-Carplay by Rhysmorgan134](https://github.com/rhysmorgan134/node-CarPlay) - Protocol reverse engineering
-- [LIVI by f-io](https://github.com/f-io/LIVI) - Linux (Raspberry Pi) and macOS implementation
-- [PyCarplay by Electric-Monk](https://github.com/electric-monk/pycarplay) - Python implementation
+# Credits
+
+Repos and people that provided stepping stones and foundations for this app:
+
+- [Carlink by lvalen91](https://github.com/lvalen91/carlink): the native Kotlin port this fork comes from
+- [Eric Yanush](https://github.com/ericyanush): the two-app split ([PR #15](https://github.com/lvalen91/carlink/pull/15)) and the voice button → Siri assistant
+- [CPC200-CCPA resources by lvalen91](https://github.com/lvalen91/CPC200-CCPA_resources): adapter firmware and reverse engineering
+- [ludwig-v's wireless CarPlay dongle reverse engineering](https://github.com/ludwig-v/wireless-carplay-dongle-reverse-engineering): firmware decryption and unpacking
+- [fileslauncher by muzso](https://github.com/muzso/fileslauncher): the idea behind the **Open Files** button
+- [CarPlay by abuharsky](https://github.com/abuharsky/carplay): the original Android implementation
+- [node-CarPlay by rhysmorgan134](https://github.com/rhysmorgan134/node-CarPlay): protocol reverse engineering
+- [LIVI by f-io](https://github.com/f-io/LIVI): Linux (Raspberry Pi) and macOS implementation
+- [pycarplay by electric-monk](https://github.com/electric-monk/pycarplay): Python implementation

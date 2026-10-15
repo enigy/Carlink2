@@ -61,6 +61,7 @@ import com.carlink.protocol.UnknownMessage
 import com.carlink.protocol.UnpluggedMessage
 import com.carlink.protocol.VideoStreamingSignal
 import com.carlink.ui.settings.AdapterConfigPreference
+import com.carlink.ui.settings.CallBufferConfig
 import com.carlink.ui.settings.CallMicConfig
 import com.carlink.ui.settings.MicSourceConfig
 import com.carlink.ui.settings.WiFiBandConfig
@@ -3317,6 +3318,9 @@ class CarlinkManager(
                 logInfo("[AUDIO_CMD] Phone call started - enabling microphone (mode: PHONECALL, decodeType=$micDecodeType)", tag = Logger.Tags.MIC)
                 activeVoiceMode = VoiceMode.PHONECALL
                 isPhoneCallAudioActive = true
+                // [226] Settings → Call Buffer, applied when this call's playback starts.
+                audioManager?.callLowLatency =
+                    AdapterConfigPreference.getInstance(context).getCallBufferSync() == CallBufferConfig.LOW
                 // Engage the platform voice-comm audio path so the HW echo canceller actually runs.
                 enterCommunicationAudioMode()
                 endPurpose(StreamPurpose.RINGTONE, command) // Call answered — ringtone is over

@@ -154,6 +154,9 @@ fun AdapterConfigurationDialog(
     val savedCallMic by adapterConfigPreference.callMicFlow.collectAsStateWithLifecycle(
         initialValue = adapterConfigPreference.getCallMicSync(),
     )
+    val savedCallBuffer by adapterConfigPreference.callBufferFlow.collectAsStateWithLifecycle(
+        initialValue = adapterConfigPreference.getCallBufferSync(),
+    )
 
     // Get usable display dimensions based on current display mode
     // FULLSCREEN_IMMERSIVE: Use full display bounds (bars are hidden)
@@ -235,6 +238,7 @@ fun AdapterConfigurationDialog(
     var selectedClusterNavigation by remember { mutableStateOf(savedClusterNavigation) }
     var selectedBackgroundLogo by remember { mutableStateOf(savedBackgroundLogo) }
     var selectedCallMic by remember { mutableStateOf(savedCallMic) }
+    var selectedCallBuffer by remember { mutableStateOf(savedCallBuffer) }
 
     // Sync local state when saved value loads (for initial load).
     // KNOWN THEORETICAL RACE (flow-shadow): any subsequent DataStore emission for one of these
@@ -254,6 +258,7 @@ fun AdapterConfigurationDialog(
     LaunchedEffect(savedClusterNavigation) { selectedClusterNavigation = savedClusterNavigation }
     LaunchedEffect(savedBackgroundLogo) { selectedBackgroundLogo = savedBackgroundLogo }
     LaunchedEffect(savedCallMic) { selectedCallMic = savedCallMic }
+    LaunchedEffect(savedCallBuffer) { selectedCallBuffer = savedCallBuffer }
 
     // Track if any changes were made.
     // NOTE (stale): the old one-liner here claimed "All adapter configuration changes require
@@ -272,9 +277,10 @@ fun AdapterConfigurationDialog(
             selectedGpsForwarding != savedGpsForwarding ||
             selectedClusterNavigation != savedClusterNavigation
     // [216] The background logo is app-only: changing just that saves without any reinit.
-    // [225] So is the call mic: it is read when the next call starts.
+    // [225] So is the call mic, and [226] the call buffer: both are read when the next call starts.
     val hasChanges =
-        adapterSettingsChanged || selectedBackgroundLogo != savedBackgroundLogo || selectedCallMic != savedCallMic
+        adapterSettingsChanged || selectedBackgroundLogo != savedBackgroundLogo || selectedCallMic != savedCallMic ||
+            selectedCallBuffer != savedCallBuffer
 
     // Responsive dialog width - 60% of container width, clamped between 320dp and 600dp
     val windowInfo = LocalWindowInfo.current
@@ -479,6 +485,44 @@ fun AdapterConfigurationDialog(
                                         color = colorScheme.primary,
                                     )
                                 }
+                            }
+
+                            // [226] Call Buffer — how much caller audio may queue (app-only).
+                            ConfigurationOptionCard(
+                                title = "Call Buffer",
+                                description = "Delay before you hear the caller",
+                                icon = Icons.Default.Timer,
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                ) {
+                                    AudioSourceButton(
+                                        label = "Low",
+                                        icon = Icons.Default.Speed,
+                                        isSelected = selectedCallBuffer == CallBufferConfig.LOW,
+                                        onClick = { selectedCallBuffer = CallBufferConfig.LOW },
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    AudioSourceButton(
+                                        label = "Standard",
+                                        icon = Icons.Default.Timer,
+                                        isSelected = selectedCallBuffer == CallBufferConfig.STANDARD,
+                                        onClick = { selectedCallBuffer = CallBufferConfig.STANDARD },
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text =
+                                        when (selectedCallBuffer) {
+                                            CallBufferConfig.LOW ->
+                                                "Short buffer; grows back on its own if the caller crackles (recommended)"
+                                            CallBufferConfig.STANDARD -> "Full buffer, as before v226"
+                                        },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = colorScheme.primary,
+                                )
                             }
 
                             // Call Quality — UI removed (not the whole feature).
@@ -1023,7 +1067,7 @@ fun AdapterConfigurationDialog(
                         when {
                             miscChanged -> "3-KILL"
                             adapterSettingsChanged -> "2-REINIT"
-                            else -> "SAVE-ONLY" // [216] background logo / [225] call mic only
+                            else -> "SAVE-ONLY" // [216] background logo / [225] call mic / [226] call buffer only
                         }
 
                     Button(
@@ -1043,6 +1087,7 @@ fun AdapterConfigurationDialog(
                                     ", clusterNav=$selectedClusterNavigation" +
                                     ", backgroundLogo=$selectedBackgroundLogo" +
                                     ", callMic=$selectedCallMic" +
+                                    ", callBuffer=$selectedCallBuffer" +
                                     ", tier=$applyTier",
                                 tag = "UI",
                             )
@@ -1055,6 +1100,7 @@ fun AdapterConfigurationDialog(
                                 // adapter changes) and no reinit.
                                 adapterConfigPreference.setBackgroundLogo(selectedBackgroundLogo)
                                 adapterConfigPreference.setCallMic(selectedCallMic)
+                                adapterConfigPreference.setCallBuffer(selectedCallBuffer)
                                 if (!adapterSettingsChanged) {
                                     onDismiss()
                                     return@launch

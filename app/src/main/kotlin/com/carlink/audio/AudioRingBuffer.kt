@@ -146,6 +146,30 @@ class AudioRingBuffer(
         return toRead
     }
 
+    /** Copy up to [length] of the oldest bytes into [out] without consuming them (reader thread). */
+    fun peek(
+        out: ByteArray,
+        offset: Int = 0,
+        length: Int = out.size - offset,
+    ): Int {
+        val toRead = minOf(length, availableForRead())
+        if (toRead <= 0) return 0
+        val localReadPos = readPos
+        val firstChunk = minOf(toRead, capacity - localReadPos)
+        System.arraycopy(buffer, localReadPos, out, offset, firstChunk)
+        if (toRead > firstChunk) System.arraycopy(buffer, 0, out, offset + firstChunk, toRead - firstChunk)
+        return toRead
+    }
+
+    /** Drop up to [length] of the oldest bytes, frame-aligned (reader thread). Returns bytes dropped. */
+    fun skip(length: Int): Int {
+        val toSkip = (minOf(length, availableForRead()) / bytesPerFrame) * bytesPerFrame
+        if (toSkip <= 0) return 0
+        readPos = (readPos + toSkip) % capacity
+        discardedBytes += toSkip
+        return toSkip
+    }
+
     fun availableForRead(): Int {
         val w = writePos
         val r = readPos

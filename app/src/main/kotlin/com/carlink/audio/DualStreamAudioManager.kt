@@ -196,6 +196,10 @@ class DualStreamAudioManager(
         // Idle-pause: timestamp when buffer first went empty while playing.
         // Track paused after idlePauseMs to release AAOS volume context.
         var idleSince: Long = 0,
+        // [226] Frames handed to the track since it was created or flushed; minus the playback
+        // head, the audio queued in it. minFrames: the track's minimum buffer, set at call start.
+        var framesWritten: Long = 0,
+        var minFrames: Int = 0,
     )
 
     // After a slot's ring buffer has been empty for this long while playing, take
@@ -205,6 +209,16 @@ class DualStreamAudioManager(
     //     (avoids volume-context flap during natural inter-packet gaps).
     //   - ALERT: actually pause (short bursts with explicit start/end signals).
     private val idlePauseMs = 200L
+
+    // [226] Phone-call latency. true (Settings → Call Buffer: Low, the default) keeps the call
+    // track's queue short ([CallLatencyControl]); false is the pre-[226] behaviour. Set by
+    // CarlinkManager at each call's start.
+    @Volatile var callLowLatency: Boolean = true
+    private val callLatency = CallLatencyControl()
+
+    @Volatile private var callTrimmedMs = 0L
+    private var lastTrimLogMs = 0L
+    private val callPeek = ByteArray(CALL_PEEK_BYTES)
 
     // Playback-thread cadence when there is NOTHING to serve — no slot track PLAYING or
     // pending and no nav track active (app idle / searching for the adapter / session up but
@@ -757,6 +771,7 @@ class DualStreamAudioManager(
             slot.idleSince = 0
             slot.residualOffset = 0
             slot.residualCount = 0
+            slot.framesWritten = 0
             slot.buffer.clear()
         }
     }
@@ -799,15 +814,19 @@ class DualStreamAudioManager(
             slot.idleSince = 0
             slot.residualOffset = 0
             slot.residualCount = 0
+            slot.framesWritten = 0 // flush() reset the playback head
             slot.buffer.clear()
+            callLatency.reset() // [226] next call starts small again
+            callTrimmedMs = 0
         }
     }
 
     /**
      * Diagnostic: the call slot's buffering right now, for the in-call echo monitor's delay
-     * breakdown. ring = far-end audio waiting in our ring buffer; trackBuf = the AudioTrack's
-     * buffer, which the playback loop keeps full while the ring has data (trackFull = a write
-     * is waiting for room). Read without the lock: numbers only, may be a pass stale.
+     * breakdown. ring = far-end audio waiting in our ring buffer; queued = audio in the AudioTrack
+     * ahead of the playback head; trackBuf = the track's working size (trackFull = a write is
+     * waiting for room); the [226] latency mode, and how much backlog it has dropped this call.
+     * Read without the lock: numbers only, may be a pass stale.
      */
     @Suppress("SwallowedException") // a released track just reads as "released"
     fun callPathStats(): String {
@@ -816,9 +835,93 @@ class DualStreamAudioManager(
         return try {
             val track = slot.track ?: return "ring=${ringMs}ms track=none"
             val bufMs = track.bufferSizeInFrames * 1000L / track.sampleRate
-            "ring=${ringMs}ms trackBuf=${bufMs}ms trackFull=${slot.residualCount > 0} underruns=${track.underrunCount}"
+            val mode =
+                if (callLowLatency) "low floor=${callLatency.silenceFloorMs}ms steps=${callLatency.steps}" else "standard"
+            "ring=${ringMs}ms queued=${queuedMs(slot, track)}ms trackBuf=${bufMs}ms ($mode) " +
+                "trackFull=${slot.residualCount > 0} underruns=${track.underrunCount} trimmed=${callTrimmedMs}ms"
         } catch (e: IllegalStateException) {
             "ring=${ringMs}ms track=released"
+        }
+    }
+
+    private fun countWritten(
+        slot: PurposeSlot,
+        bytes: Int,
+    ) {
+        if (bytes > 0) slot.framesWritten += bytes / (slot.format.channelCount * 2)
+    }
+
+    /** [226] Audio queued in [track] ahead of its playback head, in ms. */
+    private fun queuedMs(
+        slot: PurposeSlot,
+        track: AudioTrack,
+    ): Int {
+        val head = track.playbackHeadPosition.toLong() and 0xFFFFFFFFL
+        return ((slot.framesWritten - head).coerceAtLeast(0) * 1000 / slot.format.sampleRate).toInt()
+    }
+
+    private fun framesToMs(
+        frames: Int,
+        sampleRate: Int,
+    ): Long = frames * 1000L / sampleRate
+
+    /** [226] At each call's playback start: the call track's working size for the chosen mode. */
+    @Suppress("SwallowedException") // a released track: nothing to size
+    private fun applyCallBufferMode(
+        slot: PurposeSlot,
+        track: AudioTrack,
+    ) {
+        val sr = slot.format.sampleRate
+        val minBytes = AudioTrack.getMinBufferSize(sr, slot.format.channelConfig, slot.format.encoding)
+        slot.minFrames = (minBytes / (slot.format.channelCount * 2)).coerceAtLeast(1)
+        try {
+            val capacity = track.bufferCapacityInFrames
+            val want = if (callLowLatency) callLatency.workingFrames(slot.minFrames, capacity) else capacity
+            val got = track.setBufferSizeInFrames(want)
+            log(
+                "[CALL_LATENCY] ${if (callLowLatency) "low" else "standard"}: track buffer " +
+                    "${framesToMs(got, sr)}ms of ${framesToMs(capacity, sr)}ms (min ${framesToMs(slot.minFrames, sr)}ms)" +
+                    if (callLowLatency) ", silence floor ${callLatency.silenceFloorMs}ms" else "",
+            )
+        } catch (e: IllegalStateException) {
+            log("[CALL_LATENCY] track released, buffer not set")
+        }
+    }
+
+    /** [226] The call track ran dry: one step more working size and silence floor, logged. */
+    @Suppress("SwallowedException") // a released track: nothing to size
+    private fun growCallBuffer(
+        slot: PurposeSlot,
+        track: AudioTrack,
+    ) {
+        if (slot.minFrames <= 0 || !callLatency.onUnderruns()) return
+        val sr = slot.format.sampleRate
+        try {
+            val got = track.setBufferSizeInFrames(callLatency.workingFrames(slot.minFrames, track.bufferCapacityInFrames))
+            log(
+                "[CALL_LATENCY] underruns: step ${callLatency.steps}, track buffer ${framesToMs(got, sr)}ms, " +
+                    "silence floor ${callLatency.silenceFloorMs}ms",
+            )
+        } catch (e: IllegalStateException) {
+            log("[CALL_LATENCY] track released, buffer not grown")
+        }
+    }
+
+    /** [226] Drop the oldest 20 ms of a caller backlog when [CallLatencyControl.trimMs] says so. */
+    private fun trimCallBacklog(
+        slot: PurposeSlot,
+        ringMs: Int,
+    ) {
+        val bytesPerFrame = slot.format.sampleRate * slot.format.channelCount * 2 * CallLatencyControl.FRAME_MS / 1000
+        val peeked = slot.buffer.peek(callPeek, 0, minOf(bytesPerFrame, callPeek.size))
+        val quiet = peeked > 0 && CallLatencyControl.rmsDbfs(callPeek, peeked) < CallLatencyControl.QUIET_DBFS
+        val now = System.currentTimeMillis()
+        if (callLatency.trimMs(ringMs, quiet, now) == 0) return
+        val dropped = slot.buffer.skip(bytesPerFrame)
+        callTrimmedMs += dropped * 1000L / (slot.format.sampleRate * slot.format.channelCount * 2)
+        if (now - lastTrimLogMs > TRIM_LOG_INTERVAL_MS) {
+            lastTrimLogMs = now
+            log("[CALL_LATENCY] trimming caller backlog: ring=${ringMs}ms, ${callTrimmedMs}ms dropped this call")
         }
     }
 
@@ -977,6 +1080,7 @@ class DualStreamAudioManager(
                 slot.started = false
                 slot.pendingPlay = true
                 slot.residualCount = 0
+                slot.framesWritten = 0
                 log(
                     "[AUDIO] Recreated ${slot.purpose} track for format change: " +
                         "${incomingFormat.sampleRate}Hz ${incomingFormat.channelCount}ch",
@@ -986,6 +1090,7 @@ class DualStreamAudioManager(
                 slot.track = createAudioTrack(incomingFormat, slot.purpose)
                 slot.started = false
                 slot.pendingPlay = true
+                slot.framesWritten = 0
                 log("[AUDIO] Recreated dead ${slot.purpose} track: ${incomingFormat.sampleRate}Hz")
             }
         }
@@ -1215,6 +1320,7 @@ class DualStreamAudioManager(
                         if (!slot.started) {
                             if (currentFillMs < prefillThresholdMs) continue
                             slot.started = true
+                            if (slot.purpose == StreamPurpose.PHONE_CALL) applyCallBufferMode(slot, track)
                             if (slot.pendingPlay) {
                                 while (buffer.fillLevelMs() > minBufferLevelMs) {
                                     val avail = buffer.availableForRead()
@@ -1235,6 +1341,7 @@ class DualStreamAudioManager(
                                         )
                                     if (written <= 0) break
                                     windowMediaPlayed.addAndGet(written.toLong())
+                                    countWritten(slot, written)
                                     if (written < bytesRead) {
                                         slot.residualOffset = written
                                         slot.residualCount = bytesRead - written
@@ -1252,6 +1359,9 @@ class DualStreamAudioManager(
                             )
                         }
 
+                        // [226] Caller audio piling up behind a full call track: drop it in quiet frames.
+                        if (slot.purpose == StreamPurpose.PHONE_CALL && callLowLatency) trimCallBacklog(slot, currentFillMs)
+
                         // Retry residual from prior partial WRITE_NON_BLOCKING
                         if (slot.residualCount > 0) {
                             val written =
@@ -1268,6 +1378,7 @@ class DualStreamAudioManager(
                             }
                             if (written > 0) {
                                 windowMediaPlayed.addAndGet(written.toLong())
+                                countWritten(slot, written)
                                 slot.residualOffset += written
                                 slot.residualCount -= written
                                 didWork = true
@@ -1276,9 +1387,28 @@ class DualStreamAudioManager(
 
                         // Skip new reads while residual pending or buffer empty
                         if (slot.residualCount > 0 || currentFillMs <= minBufferLevelMs) {
-                            if (track.playState == AudioTrack.PLAYSTATE_PLAYING &&
-                                currentFillMs <= minBufferLevelMs && slot.residualCount == 0
-                            ) {
+                            val idlePlaying =
+                                track.playState == AudioTrack.PLAYSTATE_PLAYING &&
+                                    currentFillMs <= minBufferLevelMs && slot.residualCount == 0
+                            if (idlePlaying && slot.purpose == StreamPurpose.PHONE_CALL && callLowLatency) {
+                                // [226] Call keep-alive without a backlog: from the first empty pass,
+                                // top the track up with 20 ms of silence only while it holds less
+                                // than the floor, so the caller's next words don't queue behind it.
+                                if (callLatency.silenceNeeded(queuedMs(slot, track))) {
+                                    val silenceBytes =
+                                        slot.format.sampleRate * slot.format.channelCount * 2 *
+                                            CallLatencyControl.FRAME_MS / 1000
+                                    countWritten(
+                                        slot,
+                                        track.write(
+                                            silenceBuffer,
+                                            0,
+                                            minOf(silenceBytes, silenceBuffer.size),
+                                            AudioTrack.WRITE_NON_BLOCKING,
+                                        ),
+                                    )
+                                }
+                            } else if (idlePlaying) {
                                 val now = System.currentTimeMillis()
                                 if (slot.idleSince == 0L) {
                                     slot.idleSince = now
@@ -1297,11 +1427,15 @@ class DualStreamAudioManager(
                                         // (AUDIO_PHONECALL_STOP / AUDIO_SIRI_STOP) which call
                                         // stopPhoneCallTrack() / stopSiriTrack() to release the
                                         // volume context — not by buffer drain.
-                                        track.write(
-                                            silenceBuffer,
-                                            0,
-                                            silenceBuffer.size,
-                                            AudioTrack.WRITE_NON_BLOCKING,
+                                        // [226] PHONE_CALL in low-latency mode takes the branch above.
+                                        countWritten(
+                                            slot,
+                                            track.write(
+                                                silenceBuffer,
+                                                0,
+                                                silenceBuffer.size,
+                                                AudioTrack.WRITE_NON_BLOCKING,
+                                            ),
                                         )
                                     } else {
                                         // ALERT: pause to release AAOS volume context.
@@ -1350,6 +1484,7 @@ class DualStreamAudioManager(
                                     }
                                     if (written > 0) {
                                         windowMediaPlayed.addAndGet(written.toLong())
+                                        countWritten(slot, written)
                                     }
                                     if (written < bytesRead) {
                                         slot.residualOffset = written
@@ -1370,6 +1505,7 @@ class DualStreamAudioManager(
                                 "[AUDIO_UNDERRUN] ${slot.purpose} underrun " +
                                     "(${slot.format.sampleRate}Hz): +$newUnderruns (total: $underruns)",
                             )
+                            if (slot.purpose == StreamPurpose.PHONE_CALL && callLowLatency) growCallBuffer(slot, track)
                             if (newUnderruns >= underrunRecoveryThreshold && buffer.fillLevelMs() < 50) {
                                 slot.started = false
                                 log(
@@ -1650,6 +1786,7 @@ class DualStreamAudioManager(
                             slot.started = false
                             slot.pendingPlay = false
                             slot.residualCount = 0
+                            slot.framesWritten = 0
                         } else {
                             // NAV path
                             when (streamType) {
@@ -1677,5 +1814,11 @@ class DualStreamAudioManager(
                 }
             }
         }
+    }
+
+    private companion object {
+        // [226] 20 ms of the widest call format (48 kHz stereo); calls are 8/16 kHz mono.
+        const val CALL_PEEK_BYTES = 3840
+        const val TRIM_LOG_INTERVAL_MS = 2_000L
     }
 }

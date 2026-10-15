@@ -1840,6 +1840,31 @@
    - Compiled here; unit tests pass. Not run on hardware.
    - Affected: audio/MicrophoneCaptureManager.kt, CarlinkManager.kt, ui/settings/AdapterConfigPreference.kt,
      ui/settings/AdapterConfigurationDialog.kt, app/build.gradle.kts.
+   - Field result (v225 via Play internal, 2026-10-15): calls far better than any earlier attempt; offered upstream
+     as lvalen91/carlink [162] (PR from enigy/carlink voice-uplink-call-mic).
+
+[226] :: Call latency: the caller no longer plays ~325 ms late; the call track keeps a short queue.
+   - Cause ([223] logs): the call AudioTrack sat full at 325 ms for the whole call (trackFull=true; 975 of 986 writes
+     hit a full track). Caller audio arrives at exactly the rate it plays, so a backlog never drains, and the idle
+     keep-alive created one: after 200 ms without caller audio it wrote silenceBuffer (1920 B = 60 ms at 16 kHz mono)
+     on every 5 ms loop pass until the track was full, so the caller's next words queued behind ~325 ms of silence.
+   - New audio/CallLatencyControl (pure, unit-tested) drives the PHONE_CALL slot when Call Buffer is Low (default):
+     - keep-alive silence from the first empty pass, 20 ms at a time, only while the track holds < 40 ms;
+     - the track plays from a working size of 2 x minBuffer (GM: ~163 of 325 ms; setBufferSizeInFrames at each
+       call's playback start, allocation unchanged);
+     - underruns step the working size and the silence floor up (+1 x minBuffer, +20 ms), twice at most, the last
+       being the full allocation; reset at call end;
+     - caller audio waiting in the ring > 60 ms for 1 s is trimmed in quiet 20 ms frames (RMS < -42 dBFS; any frame
+       after 5 s) down to 20 ms. AudioRingBuffer gains peek() and skip().
+   - Queue measured as frames written since create/flush minus the playback head (PurposeSlot.framesWritten).
+   - Settings → Adapter → Audio → Call Buffer: Low (default) / Standard (pre-[226]). App-only, read at call start.
+   - Logs: [CALL_LATENCY] working size at playback start, each step-up, backlog trims; [ECHO_MON] buffer stats add
+     queued, mode/floor/steps and trimmed. The [ECHO_MON] delay should drop from ~640 ms by roughly the backlog.
+   - Not changed: echoDelay (re-set once the new delay is measured), media/Siri/nav slots, the mic side.
+   - Compiled here; unit tests pass (34). Not run on hardware.
+   - Affected: audio/CallLatencyControl.kt (new), audio/DualStreamAudioManager.kt, audio/AudioRingBuffer.kt,
+     CarlinkManager.kt, ui/settings/AdapterConfigPreference.kt, ui/settings/AdapterConfigurationDialog.kt,
+     app/build.gradle.kts.
 
 ==== Upstream lvalen91/carlink revisions [145]-[161], merged into this fork in [220]. Upstream numbers its
 ==== revisions separately from this fork; the entries below are upstream's own, kept verbatim. ====

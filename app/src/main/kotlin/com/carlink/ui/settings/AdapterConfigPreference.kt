@@ -166,6 +166,26 @@ enum class MediaDelayConfig(
 }
 
 /**
+ * [224] Echo delay sent to the adapter as `echoDelay` (its EchoLatency setting) in BoxSettings.
+ * The adapter's echo canceller only looks at echo arriving between (value − 200) and value ms
+ * after it sent the audio; 320 is its own default (120–320 ms). On GM the echo comes back
+ * ~640 ms later ([223] logs), so the default can't cancel it.
+ */
+enum class EchoDelayConfig(
+    val delayMs: Int,
+) {
+    ADAPTER(320),
+    MS_640(640),
+    MS_740(740),
+    MS_840(840),
+    ;
+
+    companion object {
+        val DEFAULT = MS_740
+    }
+}
+
+/**
  * Frame rate configuration for adapter initialization.
  * Controls the FPS value sent in the OPEN message to the adapter firmware.
  * 30 FPS is default — sufficient for CarPlay UI and reduces thermal/power load.
@@ -346,6 +366,9 @@ class AdapterConfigPreference private constructor(
         // Media delay: stored as delay in ms (300, 500, 1000, 2000)
         private val KEY_MEDIA_DELAY = intPreferencesKey("media_delay")
 
+        // Echo delay: stored as delay in ms (320, 640, 740, 840)
+        private val KEY_ECHO_DELAY = intPreferencesKey("echo_delay")
+
         // Video resolution: stored as string "WIDTHxHEIGHT" or "AUTO"
         private val KEY_VIDEO_RESOLUTION = stringPreferencesKey("video_resolution")
 
@@ -376,6 +399,7 @@ class AdapterConfigPreference private constructor(
         private const val SYNC_CACHE_KEY_WIFI_BAND = "wifi_band"
         private const val SYNC_CACHE_KEY_CALL_QUALITY = "call_quality"
         private const val SYNC_CACHE_KEY_MEDIA_DELAY = "media_delay"
+        private const val SYNC_CACHE_KEY_ECHO_DELAY = "echo_delay"
         private const val SYNC_CACHE_KEY_VIDEO_RESOLUTION = "video_resolution"
         private const val SYNC_CACHE_KEY_FPS = "fps"
         private const val SYNC_CACHE_KEY_HAND_DRIVE = "hand_drive_mode"
@@ -392,7 +416,7 @@ class AdapterConfigPreference private constructor(
          *
          * HAZARD — partial consumer coverage in MessageSerializer.addChangedSettings
          * (MessageSerializer.kt:518-579): only AUDIO_SOURCE, MIC_SOURCE, WIFI_BAND,
-         * CALL_QUALITY, MEDIA_DELAY, HAND_DRIVE, and GPS_FORWARDING are emitted on a
+         * CALL_QUALITY, MEDIA_DELAY, ECHO_DELAY, HAND_DRIVE, and GPS_FORWARDING are emitted on a
          * MINIMAL_PLUS_CHANGES reconnect. VIDEO_RESOLUTION and FPS are added to pendingChanges
          * by their setters but silently NO-OP on the wire under MINIMAL_PLUS_CHANGES. They
          * only actually propagate to the adapter on a FULL init (serializeOpen reads
@@ -409,6 +433,7 @@ class AdapterConfigPreference private constructor(
             const val WIFI_BAND = "wifi_band"
             const val CALL_QUALITY = "call_quality"
             const val MEDIA_DELAY = "media_delay"
+            const val ECHO_DELAY = "echo_delay"
 
             // HAZARD: not consumed by MessageSerializer.addChangedSettings. Adding this key to
             // pendingChanges is effectively a no-op on a MINIMAL_PLUS_CHANGES reconnect — the
@@ -601,6 +626,37 @@ class AdapterConfigPreference private constructor(
             logInfo("Media delay preference saved: $config (${config.delayMs}ms)", tag = "AdapterConfig")
         } catch (e: IOException) {
             logError("Failed to save media delay preference: $e", tag = "AdapterConfig")
+            throw e
+        }
+    }
+
+    val echoDelayFlow: Flow<EchoDelayConfig> =
+        dataStore.data.map { preferences ->
+            val value = preferences[KEY_ECHO_DELAY] ?: EchoDelayConfig.DEFAULT.delayMs
+            EchoDelayConfig.entries.find { it.delayMs == value } ?: EchoDelayConfig.DEFAULT
+        }
+
+    /**
+     * Get current echo delay configuration synchronously.
+     */
+    fun getEchoDelaySync(): EchoDelayConfig {
+        val value = syncCache.getInt(SYNC_CACHE_KEY_ECHO_DELAY, EchoDelayConfig.DEFAULT.delayMs)
+        return EchoDelayConfig.entries.find { it.delayMs == value } ?: EchoDelayConfig.DEFAULT
+    }
+
+    /**
+     * Set echo delay configuration.
+     */
+    suspend fun setEchoDelay(config: EchoDelayConfig) {
+        try {
+            dataStore.edit { preferences ->
+                preferences[KEY_ECHO_DELAY] = config.delayMs
+            }
+            syncCache.edit().putInt(SYNC_CACHE_KEY_ECHO_DELAY, config.delayMs).apply()
+            addPendingChange(ConfigKey.ECHO_DELAY)
+            logInfo("Echo delay preference saved: $config (${config.delayMs}ms)", tag = "AdapterConfig")
+        } catch (e: IOException) {
+            logError("Failed to save echo delay preference: $e", tag = "AdapterConfig")
             throw e
         }
     }
@@ -885,6 +941,8 @@ class AdapterConfigPreference private constructor(
         val callQuality: CallQualityConfig,
         /** Media delay configuration */
         val mediaDelay: MediaDelayConfig,
+        /** Echo delay: the adapter echo canceller's window */
+        val echoDelay: EchoDelayConfig = EchoDelayConfig.DEFAULT,
         /** Video resolution configuration */
         val videoResolution: VideoResolutionConfig,
         /** Frame rate configuration */
@@ -902,6 +960,7 @@ class AdapterConfigPreference private constructor(
                     wifiBand = WiFiBandConfig.DEFAULT,
                     callQuality = CallQualityConfig.DEFAULT,
                     mediaDelay = MediaDelayConfig.DEFAULT,
+                    echoDelay = EchoDelayConfig.DEFAULT,
                     videoResolution = VideoResolutionConfig.AUTO,
                     fps = FpsConfig.DEFAULT,
                     handDrive = HandDriveConfig.DEFAULT,
@@ -922,6 +981,7 @@ class AdapterConfigPreference private constructor(
         val wifiBand = getWifiBandSync()
         val callQuality = getCallQualitySync()
         val mediaDelay = getMediaDelaySync()
+        val echoDelay = getEchoDelaySync()
         val videoResolution = getVideoResolutionSync()
         val fps = getFpsSync()
         val handDrive = getHandDriveSync()
@@ -932,6 +992,7 @@ class AdapterConfigPreference private constructor(
             wifiBand = wifiBand,
             callQuality = callQuality,
             mediaDelay = mediaDelay,
+            echoDelay = echoDelay,
             videoResolution = videoResolution,
             fps = fps,
             handDrive = handDrive,
@@ -952,6 +1013,7 @@ class AdapterConfigPreference private constructor(
                 preferences.remove(KEY_WIFI_BAND)
                 preferences.remove(KEY_CALL_QUALITY)
                 preferences.remove(KEY_MEDIA_DELAY)
+                preferences.remove(KEY_ECHO_DELAY)
                 preferences.remove(KEY_VIDEO_RESOLUTION)
                 preferences.remove(KEY_FPS)
                 preferences.remove(KEY_HAND_DRIVE)
@@ -971,6 +1033,7 @@ class AdapterConfigPreference private constructor(
                     remove(SYNC_CACHE_KEY_WIFI_BAND)
                     remove(SYNC_CACHE_KEY_CALL_QUALITY)
                     remove(SYNC_CACHE_KEY_MEDIA_DELAY)
+                    remove(SYNC_CACHE_KEY_ECHO_DELAY)
                     remove(SYNC_CACHE_KEY_VIDEO_RESOLUTION)
                     remove(SYNC_CACHE_KEY_FPS)
                     remove(SYNC_CACHE_KEY_HAND_DRIVE)

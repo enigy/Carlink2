@@ -451,6 +451,10 @@ object MessageSerializer {
         val json =
             JSONObject().apply {
                 put("mediaDelay", config.mediaDelay)
+                // [224] EchoLatency for the adapter's WebRTC AECM, read at each call's start. It
+                // covers echo (echoDelay − 200)..echoDelay ms after it sends audio; the GM round
+                // trip is ~640 ms, outside the default 320's 120–320 window.
+                put("echoDelay", config.echoDelay)
                 put("syncTime", actualSyncTime)
                 put("androidAutoSizeW", aaWidth)
                 put("androidAutoSizeH", aaHeight)
@@ -617,6 +621,7 @@ object MessageSerializer {
         const val WIFI_BAND = "wifi_band"
         const val CALL_QUALITY = "call_quality"
         const val MEDIA_DELAY = "media_delay"
+        const val ECHO_DELAY = "echo_delay"
         const val HAND_DRIVE = "hand_drive_mode"
         const val GPS_FORWARDING = "gps_forwarding"
     }
@@ -729,7 +734,7 @@ object MessageSerializer {
     /**
      * Add messages for only the changed settings.
      *
-     * BoxSettings-triggering keys (MEDIA_DELAY, GPS_FORWARDING) are coalesced: any
+     * BoxSettings-triggering keys (MEDIA_DELAY, ECHO_DELAY, GPS_FORWARDING) are coalesced: any
      * number of them in [pendingChanges] produces exactly one BoxSettings resend at
      * the end of the change list. ConfigKey.CALL_QUALITY is intentionally NOT
      * consumed here — the UI was removed (AdapterConfigurationDialog.kt:418) and the
@@ -773,9 +778,10 @@ object MessageSerializer {
                 }
 
                 ConfigKey.MEDIA_DELAY,
+                ConfigKey.ECHO_DELAY,
                 ConfigKey.GPS_FORWARDING,
                 -> {
-                    // mediaDelay lives in BoxSettings JSON; GPS forwarding is gated by
+                    // mediaDelay and echoDelay live in BoxSettings JSON; GPS forwarding is gated by
                     // whether the app sends GNSS_DATA (0x29) but resend BoxSettings to
                     // keep adjacent config synced. Coalesced into one frame.
                     needsBoxSettingsResend = true

@@ -63,6 +63,14 @@ class CallEchoMonitorTest {
     }
 
     @Test
+    fun adapterWindowMatchesTheFirmwareTailAndPreDelay() {
+        assertEquals(0..150, CallEchoMonitor.adapterWindow(150)) // short: plain tail
+        assertEquals(0..200, CallEchoMonitor.adapterWindow(200))
+        assertEquals(120..320, CallEchoMonitor.adapterWindow(320)) // firmware default
+        assertEquals(540..740, CallEchoMonitor.adapterWindow(740))
+    }
+
+    @Test
     fun timelinePadsGapsAndKeepsTheirTime() {
         val t = EchoTimeline(sr, 4)
         val block = ByteArray(chunk * 2)

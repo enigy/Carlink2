@@ -19,6 +19,12 @@ internal object AudioRouteInfo {
     /** Everything the device can record from. */
     fun inputs(am: AudioManager): String = am.getDevices(AudioManager.GET_DEVICES_INPUTS).joinToString(", ") { device(it) }
 
+    /** GM's processed voice uplink input (Voice_Uplink / mic_for_vc, what GM's own CarPlay records), if listed. */
+    fun uplinkBus(am: AudioManager): AudioDeviceInfo? =
+        am.getDevices(AudioManager.GET_DEVICES_INPUTS).firstOrNull { d ->
+            d.type == AudioDeviceInfo.TYPE_BUS && d.address.lowercase().let { "uplink" in it || "mic_for" in it }
+        }
+
     /** The voice pre-processing effects the platform offers (AEC, NS, AGC), with implementor. */
     fun voiceEffects(): String =
         try {

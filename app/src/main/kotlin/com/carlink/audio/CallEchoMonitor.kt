@@ -145,6 +145,8 @@ internal class CallEchoMonitor(
     private val bufferStats: () -> String,
     private val routing: () -> String,
     private val log: (String) -> Unit,
+    /** The echoDelay sent to the adapter, so the summary can say whether the echo falls inside its window. */
+    private val adapterEchoDelayMs: Int? = null,
 ) {
     enum class Status { WARMUP, FAR_QUIET, NO_MATCH, MATCH }
 
@@ -222,12 +224,27 @@ internal class CallEchoMonitor(
             return
         }
         val delays = m.mapNotNull { it.delayMs }
+        val median = EchoDsp.median(delays)
         log(
             "[ECHO_MON] call summary: ${m.size}/$windows windows matched, " +
-                "delay median=${fmt(EchoDsp.median(delays))}ms min=${fmt(delays.minOrNull())} " +
+                "delay median=${fmt(median)}ms min=${fmt(delays.minOrNull())} " +
                 "max=${fmt(delays.maxOrNull())}, echo median=${fmt(EchoDsp.median(m.mapNotNull { it.echoDb }), 1)}dB, " +
-                "ncc median=${fmt(EchoDsp.median(m.mapNotNull { it.ncc }), 2)}",
+                "ncc median=${fmt(EchoDsp.median(m.mapNotNull { it.ncc }), 2)}" + adapterWindowText(median),
         )
+    }
+
+    /** ", adapter echoDelay=740 covers 540-740ms: inside" — the adapter's AECM window (see [adapterWindow]). */
+    private fun adapterWindowText(median: Double?): String {
+        val delay = adapterEchoDelayMs ?: return ""
+        val window = adapterWindow(delay)
+        val verdict =
+            when {
+                median == null -> "no delay"
+                median < window.first -> "echo earlier than window"
+                median > window.last -> "echo later than window"
+                else -> "inside"
+            }
+        return ", adapter echoDelay=$delay covers ${window.first}-${window.last}ms: $verdict"
     }
 
     private fun report(m: Measurement) {
@@ -312,19 +329,28 @@ internal class CallEchoMonitor(
         decimals: Int = 0,
     ): String = v?.let { "%.${decimals}f".format(it) } ?: "?"
 
-    private companion object {
-        const val HISTORY_S = 8
-        const val PERIOD_MS = 3_000L
-        const val UPLINK_WINDOW_MS = 2_000
-        const val MAX_DELAY_MS = 2_000L
-        const val MARGIN_MS = 300L
-        const val ANALYSIS_RATE = 8_000
-        const val PEAK_EXCLUDE_MS = 3
-        const val PNR_MIN_DB = 12.0
-        const val FAR_MIN_DBFS = -50.0
-        const val NANOS_PER_MS = 1_000_000L
+    companion object {
+        /**
+         * The echo delays (ms after the adapter sends far-end audio) its WebRTC AECM covers for a
+         * given echoDelay: up to 200 ms it is a plain tail; above that the tail stays 200 ms and the
+         * rest becomes a pre-delay (firmware FUN_0001fe2c, config_key_analysis.md "[10] EchoLatency").
+         */
+        fun adapterWindow(echoDelayMs: Int): IntRange =
+            if (echoDelayMs <= AECM_TAIL_MS) 0..echoDelayMs else (echoDelayMs - AECM_TAIL_MS)..echoDelayMs
+
+        private const val AECM_TAIL_MS = 200
+        private const val HISTORY_S = 8
+        private const val PERIOD_MS = 3_000L
+        private const val UPLINK_WINDOW_MS = 2_000
+        private const val MAX_DELAY_MS = 2_000L
+        private const val MARGIN_MS = 300L
+        private const val ANALYSIS_RATE = 8_000
+        private const val PEAK_EXCLUDE_MS = 3
+        private const val PNR_MIN_DB = 12.0
+        private const val FAR_MIN_DBFS = -50.0
+        private const val NANOS_PER_MS = 1_000_000L
 
         // java priority 4 maps to Android nice 10 (THREAD_PRIORITY_BACKGROUND).
-        const val WORKER_PRIORITY = 4
+        private const val WORKER_PRIORITY = 4
     }
 }

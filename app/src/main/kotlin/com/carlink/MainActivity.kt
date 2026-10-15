@@ -788,6 +788,7 @@ class MainActivity : ComponentActivity() {
                     wifiType = wifiType,
                     callQuality = userConfig.callQuality.value,
                     mediaDelay = userConfig.mediaDelay.delayMs,
+                    echoDelay = userConfig.echoDelay.delayMs,
                     viewAreaData = viewAreaData,
                     safeAreaData = safeAreaData,
                     gpsForwarding = userConfig.gpsForwarding,
@@ -818,6 +819,7 @@ class MainActivity : ComponentActivity() {
                     "sampleRate=48000Hz (hardcoded), mic=$micType, wifi=$wifiType, " +
                     "callQuality=${userConfig.callQuality.name}, " +
                     "mediaDelay=${userConfig.mediaDelay.name}(${userConfig.mediaDelay.delayMs}ms), " +
+                    "echoDelay=${userConfig.echoDelay.delayMs}ms, " +
                     "resolution=${userConfig.videoResolution.toStorageString()} (adapter: ${configWidth}x$configHeight)",
                 tag = "MAIN",
             )

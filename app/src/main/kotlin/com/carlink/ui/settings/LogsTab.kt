@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.SaveAlt
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Warning
@@ -67,6 +68,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.carlink.CarlinkManager
 import com.carlink.audio.EchoTest
+import com.carlink.audio.VoiceTest
 import com.carlink.logging.FileExportService
 import com.carlink.logging.FileLogManager
 import com.carlink.logging.LogPreset
@@ -348,6 +350,8 @@ internal fun LogsTabContent(
             }
 
             EchoTestCard(context, carlinkManager)
+
+            VoiceTestCard(context, carlinkManager)
 
             // Log Files Card
             if (logFiles.isNotEmpty()) {
@@ -919,9 +923,103 @@ private fun EchoTestCard(
 }
 
 /**
+ * [224] Voice test: records the driver on each mic path a call could use (call mic, raw mic, GM's
+ * Voice_Uplink), plays the takes back, and keeps them for replay until the screen closes.
+ */
+@Suppress("LongMethod") // one card: button, status, takes with replay
+@Composable
+private fun VoiceTestCard(
+    context: android.content.Context,
+    carlinkManager: CarlinkManager?,
+) {
+    val scope = rememberCoroutineScope()
+    val colorScheme = MaterialTheme.colorScheme
+    var running by remember { mutableStateOf(false) }
+    var status by remember { mutableStateOf<String?>(null) }
+    var outcome by remember { mutableStateOf<VoiceTest.Outcome?>(null) }
+    val test =
+        remember {
+            VoiceTest(
+                context.applicationContext,
+                blockedReason = { carlinkManager?.echoTestBlockedReason() },
+                log = { logInfo(it, tag = Logger.Tags.MIC) },
+            )
+        }
+
+    LoggingControlCard(
+        title = "Voice Test",
+        icon = Icons.Default.Mic,
+    ) {
+        Text(
+            text =
+                "Records you on each microphone a call could use, then plays each recording back through " +
+                    "the speakers. Count slowly to five aloud each time it says \"Talk now\". Takes about " +
+                    "45 seconds: park and pause music. Levels go to the log file.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = colorScheme.onSurfaceVariant,
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+        Button(
+            enabled = !running,
+            onClick = {
+                running = true
+                outcome = null
+                status = "Starting…"
+                scope.launch {
+                    outcome = withContext(Dispatchers.IO) { test.run { status = it } }
+                    status = null
+                    running = false
+                }
+            },
+        ) {
+            Text(if (running) "Running…" else "Run voice test")
+        }
+        status?.let {
+            Spacer(modifier = Modifier.height(12.dp))
+            if (it.startsWith("Talk now")) {
+                Text(text = it, style = MaterialTheme.typography.titleLarge, color = colorScheme.primary)
+            } else {
+                Text(text = it, style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+        outcome?.let { o ->
+            Spacer(modifier = Modifier.height(12.dp))
+            o.takes.forEach { take ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text =
+                            take.error?.let { "${take.label}: failed ($it)" }
+                                ?: "${take.label}: voice ${"%.0f".format(take.voiceDbfs)} dBFS, " +
+                                "${"%.0f".format(take.rangeDb)} dB above quiet",
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (take.pcm.isNotEmpty()) {
+                        TextButton(
+                            enabled = !running,
+                            onClick = {
+                                running = true
+                                status = "Playing back: ${take.label}"
+                                scope.launch {
+                                    status = withContext(Dispatchers.IO) { test.play(take) }
+                                    running = false
+                                }
+                            },
+                        ) {
+                            Text("Play")
+                        }
+                    }
+                }
+            }
+            o.notes.forEach { Text(text = it, style = MaterialTheme.typography.bodyMedium) }
+        }
+    }
+}
+
+/**
  * Material 3 card container used as a section wrapper inside the Logs tab.
  * Renders an icon + title header followed by caller-provided [content] in a
- * padded column. Used for the "File Logging", "Echo Test" and "Log Files" sections.
+ * padded column. Used for the "File Logging", "Echo Test", "Voice Test" and "Log Files" sections.
  */
 @Composable
 private fun LoggingControlCard(

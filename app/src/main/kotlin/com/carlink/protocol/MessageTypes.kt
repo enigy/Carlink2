@@ -548,6 +548,9 @@ data class AdapterConfig(
     val phoneWorkMode: Int = 2,
     val boxName: String = "carlink",
     val mediaDelay: Int = 1000,
+    /** [224] Adapter echo canceller delay (BoxSettings echoDelay → EchoLatency). It covers echo
+     *  arriving (value − 200)..value ms after the adapter sends audio; 320 is the firmware default. */
+    val echoDelay: Int = 320,
     /** Audio transfer mode: true=bluetooth, false=adapter (USB audio, default) */
     val audioTransferMode: Boolean = false,
     /** Sample rate for media audio (48000 Hz). Controls mediaSound in BoxSettings. */
@@ -588,7 +591,7 @@ data class AdapterConfig(
     // change triggers a display-mode-level re-init (resolution, DPI, format, box
     // name, icon assets, view/safe area). Fields that affect only BoxSettings-level
     // config (audioTransferMode, sampleRate, wifiType, micType, callQuality,
-    // oemIconVisible, androidWorkMode, handDriveMode, gpsForwarding, mediaDelay,
+    // oemIconVisible, androidWorkMode, handDriveMode, gpsForwarding, mediaDelay, echoDelay,
     // iBoxVersion, packetMax, phoneWorkMode, userSelectedResolution) are tracked
     // separately via AdapterConfigPreference's pendingChanges set and MINIMAL_PLUS_CHANGES
     // init mode — they don't need to invalidate AdapterConfig equality to propagate.

@@ -1797,6 +1797,32 @@
      MainActivity.kt, ui/settings/LogsTab.kt, ui/settings/AdapterConfigPreference.kt,
      ui/settings/AdapterConfigurationDialog.kt, ui/SettingsScreen.kt, app/build.gradle.kts.
 
+[224] :: Call echo: send the adapter an echoDelay that covers GM's round trip; voice check for Voice_Uplink.
+   - Measured on the truck (gminfo3.7, v223 logs 2026-10-15): echo returns 632-642 ms after the far-end audio reaches
+     the app, steady through a 55 s call; the parked test agrees (570-650 ms). Split: ~325 ms our call AudioTrack
+     buffer (sits full), ~100 ms Android output, ~190 ms GM amp/mic chain. The adapter's AECM covers
+     (echoDelay − 200)..echoDelay ms; we never sent echoDelay, so it ran at 320 = 120-320 ms and missed the echo.
+     GM's Harman AEC is attached to our mic but removes only 6-7 dB (sweep test); in calls the echo still left the
+     app ~46 dB under the far-end level, and ~20 dB under it in the first seconds.
+   - BoxSettings now carries echoDelay (Settings → Adapter → Audio → Echo Delay: Adapter 320 / 640 / 740 / 840;
+     default 740 = 540-740 ms). Persisted like Media Delay, resent on change and on every init.
+   - [ECHO_MON] start and summary lines name the adapter window and whether the measured delay falls inside it.
+     The monitor sees the mic before the adapter, so it can't show the adapter's effect: check with a call to a
+     second phone and listen there.
+   - Settings → Logs → Voice Test (audio/VoiceTest, new card): the echo test found no echo on Voice_Uplink, which an
+     echo-free mic and an empty bus both explain. The voice test says "Talk now" once per input — Call mic (today's
+     path), Raw mic, Voice_Uplink when listed — records 5 s each, then plays every take back as recorded through the
+     media speakers; each take has a Play button for replay. Logs [VOICE_TEST] voice (95th pct of 20 ms frames)
+     and quiet (10th pct) levels with routing, and whether Voice_Uplink carries the voice. Takes stay in memory.
+   - Echo test unchanged apart from sharing helpers (audio/AudioTestSupport: call attributes, effect attach, and a
+     lock so the two tests can't run at once).
+   - Not changed yet: the 325 ms call buffer (shrinking it moves the delay echoDelay must match).
+   - Compiled here; unit tests pass. Not run on hardware.
+   - Affected: ui/settings/AdapterConfigPreference.kt, ui/settings/AdapterConfigurationDialog.kt,
+     protocol/MessageTypes.kt, protocol/MessageSerializer.kt, MainActivity.kt, CarlinkManager.kt,
+     audio/CallEchoMonitor.kt, audio/EchoTest.kt, audio/AudioRouteInfo.kt, audio/AudioTestSupport.kt (new),
+     audio/VoiceTest.kt (new), ui/settings/LogsTab.kt, app/build.gradle.kts.
+
 ==== Upstream lvalen91/carlink revisions [145]-[161], merged into this fork in [220]. Upstream numbers its
 ==== revisions separately from this fork; the entries below are upstream's own, kept verbatim. ====
 

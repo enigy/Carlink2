@@ -3,7 +3,6 @@ package com.carlink.audio
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
-import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
 import android.media.AudioFormat
@@ -12,10 +11,7 @@ import android.media.AudioRecord
 import android.media.AudioTimestamp
 import android.media.AudioTrack
 import android.media.MediaRecorder
-import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.AudioEffect
-import android.media.audiofx.AutomaticGainControl
-import android.media.audiofx.NoiseSuppressor
 import androidx.core.content.ContextCompat
 import com.carlink.platform.AudioConfig
 import com.carlink.platform.PlatformDetector
@@ -149,10 +145,7 @@ internal class EchoTest(
         meas.copyInto(playF, lead + train.size + gap)
         val play = EchoDsp.floatToShorts(playF)
 
-        val bus =
-            am.getDevices(AudioManager.GET_DEVICES_INPUTS).firstOrNull { d ->
-                d.type == AudioDeviceInfo.TYPE_BUS && d.address.lowercase().let { "uplink" in it || "mic_for" in it }
-            }
+        val bus = AudioRouteInfo.uplinkBus(am)
         val variants =
             listOfNotNull(
                 Variant("Call mic", MediaRecorder.AudioSource.VOICE_COMMUNICATION, appEffects = true, commMode = true),
@@ -166,8 +159,9 @@ internal class EchoTest(
         val focus =
             AudioFocusRequest
                 .Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
-                .setAudioAttributes(callAttributes())
+                .setAudioAttributes(voiceCallAttributes())
                 .build()
+        if (!AudioTestLock.tryLock()) return listOf("Another audio test is running.")
         val focusResult = am.requestAudioFocus(focus)
         log(
             "[ECHO_TEST] start: ${variants.size} variants, sr=$SR trackBuf=minBuf*${config.bufferMultiplier} " +
@@ -193,6 +187,7 @@ internal class EchoTest(
             am.abandonAudioFocusRequest(focus)
             // A call that started meanwhile owns the mode now (CarlinkManager restores it later).
             if (blockedReason() == null) am.mode = originalMode
+            AudioTestLock.unlock()
         }
         val verdict = verdict(results)
         verdict?.let { log("[ECHO_TEST] verdict: $it") }
@@ -224,11 +219,11 @@ internal class EchoTest(
             record = AudioRecord(v.source, SR, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, recMin * 3)
             if (record.state != AudioRecord.STATE_INITIALIZED) return Result(v, error = "AudioRecord didn't initialize")
             v.device?.let { record.setPreferredDevice(it) }
-            val appFx = if (v.appEffects) attachEffects(record.audioSessionId, effects) else "none"
+            val appFx = if (v.appEffects) attachVoiceEffects(record.audioSessionId, effects) else "none"
             track =
                 AudioTrack
                     .Builder()
-                    .setAudioAttributes(callAttributes())
+                    .setAudioAttributes(voiceCallAttributes())
                     .setAudioFormat(
                         AudioFormat
                             .Builder()
@@ -352,46 +347,6 @@ internal class EchoTest(
         )
     }
 
-    private fun attachEffects(
-        sessionId: Int,
-        into: MutableList<AudioEffect>,
-    ): String {
-        val parts = mutableListOf<String>()
-
-        fun add(
-            name: String,
-            available: Boolean,
-            create: () -> AudioEffect?,
-        ) {
-            if (!available) {
-                parts += "$name=unavailable"
-                return
-            }
-            try {
-                val e = create()
-                if (e == null) {
-                    parts += "$name=null"
-                } else {
-                    e.enabled = true
-                    into += e
-                    parts += "$name=${if (e.enabled) "on" else "OFF"}:${AudioRouteInfo.effect(e.descriptor)}"
-                }
-            } catch (ex: Exception) {
-                parts += "$name=failed(${ex.message})"
-            }
-        }
-        add("aec", AcousticEchoCanceler.isAvailable()) { AcousticEchoCanceler.create(sessionId) }
-        add("ns", NoiseSuppressor.isAvailable()) { NoiseSuppressor.create(sessionId) }
-        add("agc", AutomaticGainControl.isAvailable()) { AutomaticGainControl.create(sessionId) }
-        return parts.joinToString(" ")
-    }
-
-    private fun callAttributes(): AudioAttributes =
-        AudioAttributes
-            .Builder()
-            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-            .build()
 
     private fun logLine(r: Result): String {
         val head = "[ECHO_TEST] ${r.variant.label}:"

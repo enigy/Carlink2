@@ -128,6 +128,9 @@ fun AdapterConfigurationDialog(
     val savedMediaDelay by adapterConfigPreference.mediaDelayFlow.collectAsStateWithLifecycle(
         initialValue = MediaDelayConfig.DEFAULT,
     )
+    val savedEchoDelay by adapterConfigPreference.echoDelayFlow.collectAsStateWithLifecycle(
+        initialValue = EchoDelayConfig.DEFAULT,
+    )
     val savedVideoResolution by adapterConfigPreference.videoResolutionFlow.collectAsStateWithLifecycle(
         initialValue = VideoResolutionConfig.AUTO,
     )
@@ -216,6 +219,7 @@ fun AdapterConfigurationDialog(
     var selectedMicSource by remember { mutableStateOf(savedMicSource) }
     var selectedWifiBand by remember { mutableStateOf(savedWifiBand) }
     var selectedMediaDelay by remember { mutableStateOf(savedMediaDelay) }
+    var selectedEchoDelay by remember { mutableStateOf(savedEchoDelay) }
     var selectedVideoResolution by remember { mutableStateOf(savedVideoResolution) }
     var selectedFps by remember { mutableStateOf(savedFps) }
     var selectedHandDrive by remember { mutableStateOf(savedHandDrive) }
@@ -233,6 +237,7 @@ fun AdapterConfigurationDialog(
     LaunchedEffect(savedMicSource) { selectedMicSource = savedMicSource }
     LaunchedEffect(savedWifiBand) { selectedWifiBand = savedWifiBand }
     LaunchedEffect(savedMediaDelay) { selectedMediaDelay = savedMediaDelay }
+    LaunchedEffect(savedEchoDelay) { selectedEchoDelay = savedEchoDelay }
     LaunchedEffect(savedVideoResolution) { selectedVideoResolution = savedVideoResolution }
     LaunchedEffect(savedFps) { selectedFps = savedFps }
     LaunchedEffect(savedHandDrive) { selectedHandDrive = savedHandDrive }
@@ -250,6 +255,7 @@ fun AdapterConfigurationDialog(
             selectedMicSource != savedMicSource ||
             selectedWifiBand != savedWifiBand ||
             selectedMediaDelay != savedMediaDelay ||
+            selectedEchoDelay != savedEchoDelay ||
             selectedVideoResolution != savedVideoResolution ||
             selectedFps != savedFps ||
             selectedHandDrive != savedHandDrive ||
@@ -478,6 +484,41 @@ fun AdapterConfigurationDialog(
                                             MediaDelayConfig.MEDIUM -> "500ms — Balanced latency and stability"
                                             MediaDelayConfig.STANDARD -> "1000ms — Firmware default (recommended)"
                                             MediaDelayConfig.HIGH -> "2000ms — Maximum buffer for problematic setups"
+                                        },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = colorScheme.primary,
+                                )
+                            }
+
+                            // [224] Echo Delay — the adapter's echo canceller window (echoDelay)
+                            ConfigurationOptionCard(
+                                title = "Echo Delay",
+                                description = "How late the adapter looks for call echo",
+                                icon = Icons.Default.PhoneInTalk,
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    EchoDelayConfig.entries.forEach { option ->
+                                        AudioSourceButton(
+                                            label = if (option == EchoDelayConfig.ADAPTER) "Adapter" else "${option.delayMs}",
+                                            icon = Icons.Default.PhoneInTalk,
+                                            isSelected = selectedEchoDelay == option,
+                                            onClick = { selectedEchoDelay = option },
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                                val echoFrom = (selectedEchoDelay.delayMs - 200).coerceAtLeast(0)
+                                Text(
+                                    text =
+                                        when (selectedEchoDelay) {
+                                            EchoDelayConfig.ADAPTER -> "Firmware default — cancels echo $echoFrom–320ms late"
+                                            EchoDelayConfig.DEFAULT ->
+                                                "Cancels echo $echoFrom–${selectedEchoDelay.delayMs}ms late (recommended for GM)"
+                                            else -> "Cancels echo $echoFrom–${selectedEchoDelay.delayMs}ms late"
                                         },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = colorScheme.primary,
@@ -942,6 +983,7 @@ fun AdapterConfigurationDialog(
                                     ", wifi=$selectedWifiBand" +
                                     ", callQuality=1(hardcoded)" +
                                     ", mediaDelay=$selectedMediaDelay" +
+                                    ", echoDelay=${selectedEchoDelay.delayMs}" +
                                     ", resolution=${selectedVideoResolution.toStorageString()}" +
                                     ", fps=${selectedFps.fps}" +
                                     ", handDrive=$selectedHandDrive" +
@@ -969,6 +1011,7 @@ fun AdapterConfigurationDialog(
                                 adapterConfigPreference.setMicSource(selectedMicSource)
                                 adapterConfigPreference.setWifiBand(selectedWifiBand)
                                 adapterConfigPreference.setMediaDelay(selectedMediaDelay)
+                                adapterConfigPreference.setEchoDelay(selectedEchoDelay)
                                 adapterConfigPreference.setVideoResolution(selectedVideoResolution)
                                 adapterConfigPreference.setFps(selectedFps)
                                 adapterConfigPreference.setHandDrive(selectedHandDrive)

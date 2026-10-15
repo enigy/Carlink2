@@ -1306,6 +1306,7 @@ class CarlinkManager(
                         WiFiBandConfig.BAND_24GHZ -> "24ghz"
                     },
                 callQuality = userConfig.callQuality.value,
+                echoDelay = userConfig.echoDelay.delayMs,
                 fps = userConfig.fps.fps,
                 handDriveMode = userConfig.handDrive.value,
                 gpsForwarding = userConfig.gpsForwarding,
@@ -3536,8 +3537,13 @@ class CarlinkManager(
                         "mode=${platformAudioManager?.mode} mic=${microphoneManager?.voiceEffectStates()}"
                 },
                 log = { logInfo(it, tag = Logger.Tags.MIC) },
+                adapterEchoDelayMs = config.echoDelay,
             )
-        logInfo("[ECHO_MON] started (${rate}Hz)", tag = Logger.Tags.MIC)
+        val window = CallEchoMonitor.adapterWindow(config.echoDelay)
+        logInfo(
+            "[ECHO_MON] started (${rate}Hz), adapter echoDelay=${config.echoDelay} covers ${window.first}-${window.last}ms",
+            tag = Logger.Tags.MIC,
+        )
     }
 
     private fun stopEchoMonitor() {

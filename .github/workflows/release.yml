@@ -93,7 +93,11 @@ jobs:
           KEY_PASSWORD: ${{ secrets.CARLINK_KEY_PASSWORD }}
         run: |
           if [ -z "$KEYSTORE_B64" ]; then echo "::error::CARLINK_KEYSTORE_BASE64 is not set"; exit 1; fi
-          echo "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/upload.jks"
+          # --ignore-garbage: tolerate spaces or stray characters picked up when the base64 was pasted.
+          echo "$KEYSTORE_B64" | base64 --decode --ignore-garbage > "$RUNNER_TEMP/upload.jks"
+          # A line break pasted after a value would become part of the password.
+          trim() { local s="$1"; s="${s%$'\n'}"; s="${s%$'\r'}"; printf '%s' "$s"; }
+          STORE_PASSWORD=$(trim "$STORE_PASSWORD"); KEY_ALIAS=$(trim "$KEY_ALIAS"); KEY_PASSWORD=$(trim "$KEY_PASSWORD")
           # .properties treats a backslash as an escape; double any in the passwords.
           esc() { printf '%s' "$1" | sed 's/\\/\\\\/g'; }
           {
@@ -112,11 +116,28 @@ jobs:
           KEY_ALIAS: ${{ secrets.CARLINK_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.CARLINK_KEY_PASSWORD }}
         run: |
+          trim() { local s="$1"; s="${s%$'\n'}"; s="${s%$'\r'}"; printf '%s' "$s"; }
+          STORE_PASSWORD=$(trim "$STORE_PASSWORD"); KEY_ALIAS=$(trim "$KEY_ALIAS"); KEY_PASSWORD=$(trim "$KEY_PASSWORD")
           ks="$RUNNER_TEMP/upload.jks"
-          if ! keytool -list -keystore "$ks" -storepass "$STORE_PASSWORD" > /dev/null 2>&1; then
-            echo "::error title=Upload key::Can't open the keystore. Either CARLINK_KEYSTORE_BASE64 isn't a base64 keystore (encode the .jks with: base64 -i upload.jks) or CARLINK_KEYSTORE_PASSWORD is wrong."
+          # What the secret decoded to: JKS starts FEEDFEED, JCEKS CECECECE, PKCS12 30 (DER).
+          size=$(stat -c %s "$ks")
+          magic=$(head -c 4 "$ks" | od -An -tx1 | tr -d ' \n')
+          case "$magic" in
+            feedfeed) format=JKS ;;
+            cececece) format=JCEKS ;;
+            30*) format=PKCS12 ;;
+            *) format="" ;;
+          esac
+          if [ -z "$format" ]; then
+            echo "::error title=Upload key::CARLINK_KEYSTORE_BASE64 doesn't decode to a keystore ($size bytes, starting $magic). Re-encode the .jks file itself, e.g. base64 -i upload.jks | pbcopy, and paste the whole output."
             exit 1
           fi
+          if ! out=$(keytool -list -keystore "$ks" -storepass "$STORE_PASSWORD" 2>&1); then
+            why=$(printf '%s\n' "$out" | grep -m1 -i 'error' | sed 's/^keytool error: //')
+            echo "::error title=Upload key::The keystore decodes fine ($format, $size bytes) but CARLINK_KEYSTORE_PASSWORD doesn't open it. keytool: $why"
+            exit 1
+          fi
+          echo "Keystore: $format, $size bytes"
           if ! keytool -list -keystore "$ks" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" > /dev/null 2>&1; then
             aliases=$(keytool -list -v -keystore "$ks" -storepass "$STORE_PASSWORD" 2>/dev/null | sed -n 's/^Alias name: //p' | paste -sd, -)
             echo "::error title=Upload key::CARLINK_KEY_ALIAS isn't in the keystore. Aliases in it: $aliases"

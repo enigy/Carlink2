@@ -1823,6 +1823,24 @@
      audio/CallEchoMonitor.kt, audio/EchoTest.kt, audio/AudioRouteInfo.kt, audio/AudioTestSupport.kt (new),
      audio/VoiceTest.kt (new), ui/settings/LogsTab.kt, app/build.gradle.kts.
 
+[225] :: Calls record from GM's Voice_Uplink (the car's processed call mic) instead of the built-in mic.
+   - Measured on the truck (v224 voice test, 2026-10-15, two runs): Voice_Uplink voice -22 dBFS, 53-54 dB above
+     quiet; the call mic (built-in + Harman AEC/NS/AGC) -54/-48 dBFS, 22-28 dB above quiet; raw built-in -51/-48
+     dBFS. The v223 echo test found no echo of the call output on Voice_Uplink (best -76 dB) against -30 dB on the
+     built-in mic. Played back, Voice_Uplink was clearly the best. It is the input GM's own CarPlay records calls
+     from; the car's DSP echo-cancels it against bus4_call_out, the bus our call track plays on.
+   - Phone calls: MicrophoneCaptureManager.start(decodeType, input) records VOICE_COMMUNICATION with
+     setPreferredDevice(Voice_Uplink) and attaches no app AEC/NS/AGC (the car already did that work). Falls back to
+     the built-in mic + effects when the bus isn't listed (non-GM) or Call Mic is set to Built-in. Siri unchanged.
+     A Siri-initiated call (mic already open for Siri) is restarted on the call input.
+   - Settings → Adapter → Audio → Call Mic (shown when the car lists Voice_Uplink and Microphone Source is Radio):
+     Car voice (default) / Built-in. App-only: saved without reinit, read at each call's start.
+   - [MIC] lines name the input, the routed device and a WARNING if routing ignored the preference.
+   - Untested: talking over the far end (whether the car's DSP clips the driver during double talk).
+   - Compiled here; unit tests pass. Not run on hardware.
+   - Affected: audio/MicrophoneCaptureManager.kt, CarlinkManager.kt, ui/settings/AdapterConfigPreference.kt,
+     ui/settings/AdapterConfigurationDialog.kt, app/build.gradle.kts.
+
 ==== Upstream lvalen91/carlink revisions [145]-[161], merged into this fork in [220]. Upstream numbers its
 ==== revisions separately from this fork; the entries below are upstream's own, kept verbatim. ====
 

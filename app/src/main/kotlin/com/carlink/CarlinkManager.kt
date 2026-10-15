@@ -3,6 +3,7 @@ package com.carlink
 import android.content.Context
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
+import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.os.PowerManager
 import android.os.SystemClock
@@ -13,6 +14,7 @@ import com.carlink.assistant.SiriDelegation
 import com.carlink.assistant.SiriRequestResult
 import com.carlink.assistant.SiriRequestTarget
 import com.carlink.audio.AudioFormats
+import com.carlink.audio.AudioRouteInfo
 import com.carlink.audio.CallEchoMonitor
 import com.carlink.audio.DualStreamAudioManager
 import com.carlink.audio.MicFormats
@@ -59,6 +61,7 @@ import com.carlink.protocol.UnknownMessage
 import com.carlink.protocol.UnpluggedMessage
 import com.carlink.protocol.VideoStreamingSignal
 import com.carlink.ui.settings.AdapterConfigPreference
+import com.carlink.ui.settings.CallMicConfig
 import com.carlink.ui.settings.MicSourceConfig
 import com.carlink.ui.settings.WiFiBandConfig
 import com.carlink.usb.AdapterDevices
@@ -597,6 +600,7 @@ class CarlinkManager(
     private var isMicrophoneCapturing = false
     private var currentMicDecodeType = 5 // 16kHz mono
     private var currentMicAudioType = 3 // Siri/voice input
+    private var currentMicInputId: Int? = null // [225] preferred input device id, null = default mic
     private var lastIncomingDecodeType = 5 // Track adapter's current audio format (from incoming AudioData)
     private var micSendTimer: Timer? = null
 
@@ -3460,18 +3464,21 @@ class CarlinkManager(
         decodeType: Int,
         audioType: Int,
     ) {
+        val input = callMicInput()
         if (isMicrophoneCapturing) {
-            if (currentMicDecodeType == decodeType && currentMicAudioType == audioType) {
+            // The input check moves a Siri-initiated call (mic already open for Siri) onto the call input.
+            if (currentMicDecodeType == decodeType && currentMicAudioType == audioType && currentMicInputId == input?.id) {
                 return
             }
             stopMicrophoneCapture()
         }
 
-        val started = microphoneManager?.start(decodeType) ?: false
+        val started = microphoneManager?.start(decodeType, input) ?: false
         if (started) {
             isMicrophoneCapturing = true
             currentMicDecodeType = decodeType
             currentMicAudioType = audioType
+            currentMicInputId = input?.id
 
             // Start send loop
             // HAZARD: java.util.Timer.scheduleAtFixedRate silently terminates the Timer if
@@ -3498,6 +3505,17 @@ class CarlinkManager(
 
             logInfo("Microphone capture started", tag = Logger.Tags.MIC)
         }
+    }
+
+    /**
+     * [225] The input a phone call records from: GM's Voice_Uplink bus (the car's processed call
+     * mic, what GM's own CarPlay uses) when the car lists it and Settings → Call Mic is "Car voice";
+     * otherwise null = the built-in mic with Android's effects. Siri keeps the built-in mic.
+     */
+    private fun callMicInput(): AudioDeviceInfo? {
+        if (activeVoiceMode != VoiceMode.PHONECALL) return null
+        if (AdapterConfigPreference.getInstance(context).getCallMicSync() != CallMicConfig.VOICE_UPLINK) return null
+        return platformAudioManager?.let { AudioRouteInfo.uplinkBus(it) }
     }
 
     private fun stopMicrophoneCapture() {

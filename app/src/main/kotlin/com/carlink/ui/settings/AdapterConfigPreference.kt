@@ -248,6 +248,26 @@ enum class BackgroundLogoConfig(
 }
 
 /**
+ * [225] Which input a phone call records from. App-only: the adapter never sees it.
+ * VOICE_UPLINK is GM's processed call uplink (the Voice_Uplink bus GM's own CarPlay records),
+ * echo-cancelled and leveled by the car; used when the car lists it, else the built-in mic.
+ * BUILT_IN is the pre-[225] path: the built-in mic with Android's AEC/NS/AGC attached.
+ */
+enum class CallMicConfig(
+    val code: String,
+) {
+    VOICE_UPLINK("voice_uplink"),
+    BUILT_IN("built_in"),
+    ;
+
+    companion object {
+        val DEFAULT = VOICE_UPLINK
+
+        fun fromCode(code: String?): CallMicConfig = entries.find { it.code == code } ?: DEFAULT
+    }
+}
+
+/**
  * Video resolution configuration for adapter initialization.
  *
  * AUTO uses the detected display resolution (usable area after system UI).
@@ -387,6 +407,9 @@ class AdapterConfigPreference private constructor(
         // Background logo: stored as BackgroundLogoConfig.code ("gmc", "chevrolet")
         private val KEY_BACKGROUND_LOGO = stringPreferencesKey("background_logo")
 
+        // Call mic input: stored as CallMicConfig.code ("voice_uplink", "built_in")
+        private val KEY_CALL_MIC = stringPreferencesKey("call_mic")
+
         // Initialization tracking
         private val KEY_HAS_COMPLETED_FIRST_INIT = booleanPreferencesKey("has_completed_first_init")
         private val KEY_LAST_INIT_VERSION_CODE = longPreferencesKey("last_init_version_code")
@@ -406,6 +429,7 @@ class AdapterConfigPreference private constructor(
         private const val SYNC_CACHE_KEY_GPS_FORWARDING = "gps_forwarding"
         private const val SYNC_CACHE_KEY_CLUSTER_NAVIGATION = "cluster_navigation_enabled"
         private const val SYNC_CACHE_KEY_BACKGROUND_LOGO = "background_logo"
+        private const val SYNC_CACHE_KEY_CALL_MIC = "call_mic"
         private const val SYNC_CACHE_KEY_HAS_COMPLETED_FIRST_INIT = "has_completed_first_init"
         private const val SYNC_CACHE_KEY_LAST_INIT_VERSION_CODE = "last_init_version_code"
         private const val SYNC_CACHE_KEY_PENDING_CHANGES = "pending_changes"
@@ -895,6 +919,27 @@ class AdapterConfigPreference private constructor(
         }
     }
 
+    val callMicFlow: Flow<CallMicConfig> =
+        dataStore.data.map { preferences ->
+            CallMicConfig.fromCode(preferences[KEY_CALL_MIC])
+        }
+
+    /** Read at each call's mic start; app-only, so no pending change or reinit. */
+    fun getCallMicSync(): CallMicConfig = CallMicConfig.fromCode(syncCache.getString(SYNC_CACHE_KEY_CALL_MIC, null))
+
+    suspend fun setCallMic(config: CallMicConfig) {
+        try {
+            dataStore.edit { preferences ->
+                preferences[KEY_CALL_MIC] = config.code
+            }
+            syncCache.edit().putString(SYNC_CACHE_KEY_CALL_MIC, config.code).apply()
+            logInfo("Call mic preference saved: $config", tag = "AdapterConfig")
+        } catch (e: IOException) {
+            logError("Failed to save call mic preference: $e", tag = "AdapterConfig")
+            throw e
+        }
+    }
+
     /**
      * Apply the cluster service component enabled/disabled state based on preference.
      * Call this early in Activity.onCreate() so the state is set before Templates Host discovers it.
@@ -1020,6 +1065,7 @@ class AdapterConfigPreference private constructor(
                 preferences.remove(KEY_GPS_FORWARDING)
                 preferences.remove(KEY_CLUSTER_NAVIGATION)
                 preferences.remove(KEY_BACKGROUND_LOGO)
+                preferences.remove(KEY_CALL_MIC)
                 preferences.remove(KEY_HAS_COMPLETED_FIRST_INIT)
                 preferences.remove(KEY_LAST_INIT_VERSION_CODE)
                 preferences.remove(KEY_PENDING_CHANGES)
@@ -1040,6 +1086,7 @@ class AdapterConfigPreference private constructor(
                     remove(SYNC_CACHE_KEY_GPS_FORWARDING)
                     remove(SYNC_CACHE_KEY_CLUSTER_NAVIGATION)
                     remove(SYNC_CACHE_KEY_BACKGROUND_LOGO)
+                    remove(SYNC_CACHE_KEY_CALL_MIC)
                     remove(SYNC_CACHE_KEY_HAS_COMPLETED_FIRST_INIT)
                     remove(SYNC_CACHE_KEY_LAST_INIT_VERSION_CODE)
                     remove(SYNC_CACHE_KEY_PENDING_CHANGES)

@@ -1,5 +1,6 @@
 package com.carlink.ui.settings
 
+import android.media.AudioManager
 import androidx.activity.ComponentActivity
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
@@ -74,6 +75,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.carlink.CarlinkManager
+import com.carlink.audio.AudioRouteInfo
 import com.carlink.logging.logInfo
 import com.carlink.logging.logWarn
 import com.carlink.ui.theme.AutomotiveDimens
@@ -149,12 +151,18 @@ fun AdapterConfigurationDialog(
     val savedBackgroundLogo by adapterConfigPreference.backgroundLogoFlow.collectAsStateWithLifecycle(
         initialValue = adapterConfigPreference.getBackgroundLogoSync(),
     )
+    val savedCallMic by adapterConfigPreference.callMicFlow.collectAsStateWithLifecycle(
+        initialValue = adapterConfigPreference.getCallMicSync(),
+    )
 
     // Get usable display dimensions based on current display mode
     // FULLSCREEN_IMMERSIVE: Use full display bounds (bars are hidden)
     // Other modes: Subtract system bar insets from bounds
     val context = LocalContext.current
     val activity = context as? ComponentActivity
+    // [225] The Call Mic choice only applies when the car lists GM's Voice_Uplink input.
+    val hasVoiceUplink =
+        remember { context.getSystemService(AudioManager::class.java)?.let { AudioRouteInfo.uplinkBus(it) } != null }
     val (usableWidth, usableHeight) =
         if (activity != null) {
             // WindowMetricsCompat falls back to getRealMetrics + WindowInsetsCompat on
@@ -226,6 +234,7 @@ fun AdapterConfigurationDialog(
     var selectedGpsForwarding by remember { mutableStateOf(savedGpsForwarding) }
     var selectedClusterNavigation by remember { mutableStateOf(savedClusterNavigation) }
     var selectedBackgroundLogo by remember { mutableStateOf(savedBackgroundLogo) }
+    var selectedCallMic by remember { mutableStateOf(savedCallMic) }
 
     // Sync local state when saved value loads (for initial load).
     // KNOWN THEORETICAL RACE (flow-shadow): any subsequent DataStore emission for one of these
@@ -244,6 +253,7 @@ fun AdapterConfigurationDialog(
     LaunchedEffect(savedGpsForwarding) { selectedGpsForwarding = savedGpsForwarding }
     LaunchedEffect(savedClusterNavigation) { selectedClusterNavigation = savedClusterNavigation }
     LaunchedEffect(savedBackgroundLogo) { selectedBackgroundLogo = savedBackgroundLogo }
+    LaunchedEffect(savedCallMic) { selectedCallMic = savedCallMic }
 
     // Track if any changes were made.
     // NOTE (stale): the old one-liner here claimed "All adapter configuration changes require
@@ -262,7 +272,9 @@ fun AdapterConfigurationDialog(
             selectedGpsForwarding != savedGpsForwarding ||
             selectedClusterNavigation != savedClusterNavigation
     // [216] The background logo is app-only: changing just that saves without any reinit.
-    val hasChanges = adapterSettingsChanged || selectedBackgroundLogo != savedBackgroundLogo
+    // [225] So is the call mic: it is read when the next call starts.
+    val hasChanges =
+        adapterSettingsChanged || selectedBackgroundLogo != savedBackgroundLogo || selectedCallMic != savedCallMic
 
     // Responsive dialog width - 60% of container width, clamped between 320dp and 600dp
     val windowInfo = LocalWindowInfo.current
@@ -427,6 +439,46 @@ fun AdapterConfigurationDialog(
                                     style = MaterialTheme.typography.bodySmall,
                                     color = colorScheme.primary,
                                 )
+                            }
+
+                            // [225] Call Mic — which radio input calls record from (app-only).
+                            if (selectedMicSource == MicSourceConfig.APP && hasVoiceUplink) {
+                                ConfigurationOptionCard(
+                                    title = "Call Mic",
+                                    description = "Microphone input used for phone calls",
+                                    icon = Icons.Default.PhoneInTalk,
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                    ) {
+                                        AudioSourceButton(
+                                            label = "Car voice",
+                                            icon = Icons.Default.DirectionsCar,
+                                            isSelected = selectedCallMic == CallMicConfig.VOICE_UPLINK,
+                                            onClick = { selectedCallMic = CallMicConfig.VOICE_UPLINK },
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                        AudioSourceButton(
+                                            label = "Built-in",
+                                            icon = Icons.Default.Mic,
+                                            isSelected = selectedCallMic == CallMicConfig.BUILT_IN,
+                                            onClick = { selectedCallMic = CallMicConfig.BUILT_IN },
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text(
+                                        text =
+                                            when (selectedCallMic) {
+                                                CallMicConfig.VOICE_UPLINK ->
+                                                    "The car's call mic (Voice_Uplink), echo-cancelled by the car (recommended)"
+                                                CallMicConfig.BUILT_IN -> "Built-in mic with Android echo cancelling (before v225)"
+                                            },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = colorScheme.primary,
+                                    )
+                                }
                             }
 
                             // Call Quality — UI removed (not the whole feature).
@@ -971,7 +1023,7 @@ fun AdapterConfigurationDialog(
                         when {
                             miscChanged -> "3-KILL"
                             adapterSettingsChanged -> "2-REINIT"
-                            else -> "SAVE-ONLY" // [216] background logo only
+                            else -> "SAVE-ONLY" // [216] background logo / [225] call mic only
                         }
 
                     Button(
@@ -990,6 +1042,7 @@ fun AdapterConfigurationDialog(
                                     ", gpsForwarding=$selectedGpsForwarding" +
                                     ", clusterNav=$selectedClusterNavigation" +
                                     ", backgroundLogo=$selectedBackgroundLogo" +
+                                    ", callMic=$selectedCallMic" +
                                     ", tier=$applyTier",
                                 tag = "UI",
                             )
@@ -1001,6 +1054,7 @@ fun AdapterConfigurationDialog(
                                 // at once. Nothing else changed → no setters (they'd queue pending
                                 // adapter changes) and no reinit.
                                 adapterConfigPreference.setBackgroundLogo(selectedBackgroundLogo)
+                                adapterConfigPreference.setCallMic(selectedCallMic)
                                 if (!adapterSettingsChanged) {
                                     onDismiss()
                                     return@launch

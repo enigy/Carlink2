@@ -3,6 +3,7 @@ package com.carlink.audio
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
@@ -155,10 +156,17 @@ class MicrophoneCaptureManager(
      *        forward the audio downstream — dead in practice.
      *  - 7 = stereo voice (16kHz stereo): same — firmware does not forward stereo mic.
      *
+     * [input]: record from this device instead of the default mic — [225] GM's Voice_Uplink bus for
+     * calls. That uplink is already echo-cancelled and leveled by the car, so no app effects are
+     * attached to it (the voice test's clean take had none).
+     *
      * AudioRecord bring-up with guard-clause early-returns for each failure mode; returns reflect them.
      */
-    @Suppress("LongMethod", "ReturnCount")
-    fun start(decodeType: Int = 5): Boolean {
+    @Suppress("LongMethod", "ReturnCount", "CyclomaticComplexMethod")
+    fun start(
+        decodeType: Int = 5,
+        input: AudioDeviceInfo? = null,
+    ): Boolean {
         synchronized(lock) {
             if (isRunning.get()) {
                 log("[MIC] Already capturing")
@@ -205,10 +213,16 @@ class MicrophoneCaptureManager(
                     return false
                 }
 
-                // Explicitly enable echo cancellation / noise suppression / gain control on the
-                // capture session. VOICE_COMMUNICATION alone did NOT reliably apply them on the GM
-                // Intel SST HAL (far end heard speaker→mic echo + a distant, low-level voice).
-                audioRecord?.audioSessionId?.let { attachVoiceEffects(it) }
+                if (input != null) {
+                    // [225] The car's processed call uplink: no app effects on top of it.
+                    val preferred = audioRecord?.setPreferredDevice(input) ?: false
+                    log("[MIC] Input: ${AudioRouteInfo.device(input)} preferred=$preferred, no app effects")
+                } else {
+                    // Explicitly enable echo cancellation / noise suppression / gain control on the
+                    // capture session. VOICE_COMMUNICATION alone did NOT reliably apply them on the GM
+                    // Intel SST HAL (far end heard speaker→mic echo + a distant, low-level voice).
+                    audioRecord?.audioSessionId?.let { attachVoiceEffects(it) }
+                }
 
                 micBuffer =
                     AudioRingBuffer(
@@ -226,10 +240,14 @@ class MicrophoneCaptureManager(
                 isRunning.set(true)
                 captureThread = MicCaptureThread(format).also { it.start() }
 
+                val routed = audioRecord?.routedDevice
                 log(
                     "[MIC] Capture started: ${format.sampleRate}Hz ${format.channelCount}ch " +
-                        "buffer=${recordBufferSize}B",
+                        "buffer=${recordBufferSize}B in=${AudioRouteInfo.device(routed)}",
                 )
+                if (input != null && routed != null && routed.id != input.id) {
+                    log("[MIC] WARNING: asked for ${AudioRouteInfo.device(input)} but recording from ${AudioRouteInfo.device(routed)}")
+                }
                 return true
             } catch (e: SecurityException) {
                 log("[MIC] ERROR: Permission denied: ${e.message}")

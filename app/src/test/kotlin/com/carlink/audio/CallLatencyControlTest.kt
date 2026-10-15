@@ -38,26 +38,47 @@ class CallLatencyControlTest {
     }
 
     @Test
-    fun backlogIsTrimmedInQuietFramesAfterTheHoldDownToTheTarget() {
+    fun theStandingQueueAboveTheFloorIsTrimmedInQuietFrames() {
         val c = CallLatencyControl()
 
-        assertEquals(0, c.trimMs(ringMs = 50, quiet = true, nowMs = 1_000)) // under the cap
-        assertEquals(0, c.trimMs(ringMs = 100, quiet = true, nowMs = 1_000)) // over: hold starts
-        assertEquals(0, c.trimMs(ringMs = 100, quiet = true, nowMs = 1_900)) // still holding
-        assertEquals(0, c.trimMs(ringMs = 100, quiet = false, nowMs = 2_000)) // trimming, but speech
-        assertEquals(20, c.trimMs(ringMs = 100, quiet = true, nowMs = 2_010))
-        assertEquals(20, c.trimMs(ringMs = 40, quiet = true, nowMs = 2_020)) // below cap, above target
-        assertEquals(0, c.trimMs(ringMs = 20, quiet = true, nowMs = 2_030)) // target reached
-        assertEquals(0, c.trimMs(ringMs = 40, quiet = true, nowMs = 2_040)) // under the cap again
+        // v226: 65 ms in the track and 40-90 ms more in the ring all call; it never fell below 105.
+        var now = 1_000L
+        while (now < 3_000) {
+            assertEquals(0, c.trimMs(totalMs = 105 + (now % 50).toInt(), ringMs = 40, quiet = true, nowMs = now))
+            now += 10
+        }
+        // Window closed: 105 - 40 floor = 65 ms never needed → three quiet 20 ms frames.
+        assertEquals(0, c.trimMs(totalMs = 110, ringMs = 45, quiet = false, nowMs = 3_000)) // speech: wait
+        assertEquals(20, c.trimMs(totalMs = 110, ringMs = 45, quiet = true, nowMs = 3_010))
+        assertEquals(20, c.trimMs(totalMs = 90, ringMs = 25, quiet = true, nowMs = 3_020))
+        assertEquals(0, c.trimMs(totalMs = 70, ringMs = 5, quiet = true, nowMs = 3_030)) // ring too short
+        assertEquals(20, c.trimMs(totalMs = 90, ringMs = 30, quiet = true, nowMs = 3_040))
+        assertEquals(0, c.trimMs(totalMs = 70, ringMs = 30, quiet = true, nowMs = 3_050)) // excess used up
     }
 
     @Test
-    fun aBacklogThatNeverGoesQuietIsTrimmedAfterTheForceTime() {
+    fun aQueueThatDipsToTheFloorIsLeftAlone() {
         val c = CallLatencyControl()
 
-        c.trimMs(ringMs = 100, quiet = false, nowMs = 0L + 1) // hold starts at 1
-        assertEquals(0, c.trimMs(ringMs = 100, quiet = false, nowMs = 4_000))
-        assertEquals(20, c.trimMs(ringMs = 100, quiet = false, nowMs = 5_001))
+        var now = 1_000L
+        while (now <= 3_100) {
+            val total = if (now % 300 == 0L) 50 else 120 // touches 50: only 10 ms above the floor
+            assertEquals(0, c.trimMs(totalMs = total, ringMs = 60, quiet = true, nowMs = now))
+            now += 10
+        }
+    }
+
+    @Test
+    fun aStandingQueueThatNeverGoesQuietIsTrimmedAfterTheForceTime() {
+        val c = CallLatencyControl()
+
+        var now = 1_000L
+        while (now <= 3_000) {
+            c.trimMs(totalMs = 200, ringMs = 100, quiet = false, nowMs = now)
+            now += 10
+        }
+        assertEquals(0, c.trimMs(totalMs = 200, ringMs = 100, quiet = false, nowMs = 7_900)) // excess seen at 3000
+        assertEquals(20, c.trimMs(totalMs = 200, ringMs = 100, quiet = false, nowMs = 8_000))
     }
 
     @Test

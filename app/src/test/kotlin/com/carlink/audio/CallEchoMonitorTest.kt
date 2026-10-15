@@ -26,12 +26,13 @@ class CallEchoMonitorTest {
         seconds: Int,
         delayChunks: Int,
         farAmp: Float,
+        echoGain: Float = 0.3f,
     ) {
         val r = Random(7)
         val total = seconds * sr
         val far = FloatArray(total) { (r.nextFloat() * 2 - 1) * farAmp }
         val delay = delayChunks * chunk
-        val mic = FloatArray(total) { i -> (if (i >= delay) 0.3f * far[i - delay] else 0f) + (r.nextFloat() * 2 - 1) * 0.005f }
+        val mic = FloatArray(total) { i -> (if (i >= delay) echoGain * far[i - delay] else 0f) + (r.nextFloat() * 2 - 1) * 0.005f }
         for (c in 0 until total / chunk) {
             val at = (c + 1) * 20 * ms
             monitor.onDownlink(pcm(far.copyOfRange(c * chunk, (c + 1) * chunk)), 0, chunk * 2, at)
@@ -60,6 +61,14 @@ class CallEchoMonitorTest {
         feed(m, seconds = 6, delayChunks = 20, farAmp = 0.0005f)
 
         assertEquals(CallEchoMonitor.Status.FAR_QUIET, m.measure().status)
+    }
+
+    @Test
+    fun noEchoIsNotAMatch() {
+        val m = monitor()
+        feed(m, seconds = 6, delayChunks = 20, farAmp = 0.2f, echoGain = 0f) // Voice_Uplink: no echo
+
+        assertEquals(CallEchoMonitor.Status.NO_MATCH, m.measure().status)
     }
 
     @Test

@@ -246,12 +246,15 @@ internal class VoiceTest(
         val bus = takes.firstOrNull { it.label == "Voice_Uplink" } ?: return null
         val rawRange = raw.rangeDb
         val busRange = bus.rangeDb
+        // [227] Judged against each take's own background: in a noisy cabin (v226: road noise at -66 dBFS)
+        // the raw mic only got 12-13 dB above it, which the old fixed 15 dB mark read as "didn't hear you".
         return when {
             rawRange == null || busRange == null -> null
-            rawRange < VOICE_RANGE_DB -> "The raw mic didn't hear you. Run it again and talk at \"Talk now\"."
             busRange >= VOICE_RANGE_DB ->
-                "Voice_Uplink carries your voice (${fmt(bus.voiceDbfs)} dBFS; raw mic ${fmt(raw.voiceDbfs)} dBFS)."
-            else -> "Voice_Uplink did not carry your voice (raw mic heard it ${fmt(rawRange)} dB above quiet)."
+                "Voice_Uplink carries your voice: ${fmt(busRange)} dB above background (${fmt(bus.voiceDbfs)} dBFS); " +
+                    "raw mic ${fmt(rawRange)} dB (${fmt(raw.voiceDbfs)} dBFS)."
+            rawRange < VOICE_RANGE_DB -> "Neither mic heard you over the background. Run it again and talk at \"Talk now\"."
+            else -> "Voice_Uplink did not carry your voice (raw mic heard it ${fmt(rawRange)} dB above background)."
         }
     }
 
@@ -268,7 +271,7 @@ internal class VoiceTest(
         const val DETAILS_AFTER_DIV = 5 // describe the route once 200 ms are in
         const val VOICE_PCT = 95
         const val QUIET_PCT = 10
-        const val VOICE_RANGE_DB = 15.0
+        const val VOICE_RANGE_DB = 8.0
         const val MIN_FRAMES = 50
         const val PLAY_BUFFER_MULTIPLIER = 4
         const val NANOS_PER_MS = 1_000_000L

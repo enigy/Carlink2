@@ -1865,6 +1865,28 @@
    - Affected: audio/CallLatencyControl.kt (new), audio/DualStreamAudioManager.kt, audio/AudioRingBuffer.kt,
      CarlinkManager.kt, ui/settings/AdapterConfigPreference.kt, ui/settings/AdapterConfigurationDialog.kt,
      app/build.gradle.kts.
+   - Field result (v226 sideload, 2026-10-15, three calls ~3.5 min, Low): the track ran at 65 ms of 130 ms with no
+     underrun, step-up or trim; 100-150 ms of caller audio stood in the app (track 45-65 + ring 0-100). Calls felt
+     somewhat quicker. That day Android's call minBuffer was 32 ms (130 ms allocation) against 81 ms (325 ms) on the
+     v223 drive, and the echo test's track->speaker 180 ms against 400-450 ms: the car's own path was faster too,
+     cause not visible in the logs.
+
+[227] :: Call latency follow-up: start calls at 40 ms and trim the standing queue; echo monitor and voice test fixes.
+   - Call start: low-latency calls start playback at 40 ms queued (CallLatencyControl.PREFILL_MS) instead of the
+     80 ms prefill (90 ms seen); with the arrival rate equal to the play rate that start level stood all call.
+   - Standing-queue trim replaces [226]'s ring cap (ring > 60 ms for 1 s), which never fired: with ~30 ms packets the
+     ring swung 20-100 ms. Now the least the app held (ring + pending write + track) over each 2 s window, minus the
+     silence floor, is dropped from the oldest ring audio in quiet 20 ms frames (any frame after 5 s). [CALL_LATENCY]
+     logs "trimming standing backlog".
+   - [ECHO_MON] matches need ncc >= 0.1 as well as a 12 dB peak. With Voice_Uplink there is no echo (v226: -74 to -93
+     dB) and noise peaks at random delays (ncc 0.00-0.07) were summarised as 1211/1111/610 ms "echo later than window".
+     Real echoes in v223 had ncc 0.18-0.71. A call with no echo now reads "no echo match in N windows".
+   - Voice test verdict judged against each take's background with an 8 dB mark (was a fixed 15 dB): a noisy cabin
+     (road noise -66 dBFS) put the raw mic 12-13 dB up and the test said it hadn't heard the driver.
+   - Echo delay stays 740 by default; with Voice_Uplink there is nothing left for the adapter to cancel.
+   - Compiled here; unit tests pass (36). Not run on hardware.
+   - Affected: audio/CallLatencyControl.kt, audio/DualStreamAudioManager.kt, audio/CallEchoMonitor.kt,
+     audio/VoiceTest.kt, app/build.gradle.kts.
 
 ==== Upstream lvalen91/carlink revisions [145]-[161], merged into this fork in [220]. Upstream numbers its
 ==== revisions separately from this fork; the entries below are upstream's own, kept verbatim. ====

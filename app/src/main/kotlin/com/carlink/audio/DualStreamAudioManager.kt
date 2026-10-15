@@ -908,20 +908,30 @@ class DualStreamAudioManager(
     }
 
     /** [226] Drop the oldest 20 ms of a caller backlog when [CallLatencyControl.trimMs] says so. */
+    @Suppress("SwallowedException") // a released track: nothing queued in it
     private fun trimCallBacklog(
         slot: PurposeSlot,
+        track: AudioTrack,
         ringMs: Int,
     ) {
-        val bytesPerFrame = slot.format.sampleRate * slot.format.channelCount * 2 * CallLatencyControl.FRAME_MS / 1000
+        val bytesPerMs = slot.format.sampleRate * slot.format.channelCount * 2 / 1000
+        val bytesPerFrame = bytesPerMs * CallLatencyControl.FRAME_MS
+        val trackMs =
+            try {
+                queuedMs(slot, track)
+            } catch (e: IllegalStateException) {
+                0
+            }
+        val totalMs = ringMs + slot.residualCount / bytesPerMs + trackMs
         val peeked = slot.buffer.peek(callPeek, 0, minOf(bytesPerFrame, callPeek.size))
         val quiet = peeked > 0 && CallLatencyControl.rmsDbfs(callPeek, peeked) < CallLatencyControl.QUIET_DBFS
         val now = System.currentTimeMillis()
-        if (callLatency.trimMs(ringMs, quiet, now) == 0) return
+        if (callLatency.trimMs(totalMs, ringMs, quiet, now) == 0) return
         val dropped = slot.buffer.skip(bytesPerFrame)
         callTrimmedMs += dropped * 1000L / (slot.format.sampleRate * slot.format.channelCount * 2)
         if (now - lastTrimLogMs > TRIM_LOG_INTERVAL_MS) {
             lastTrimLogMs = now
-            log("[CALL_LATENCY] trimming caller backlog: ring=${ringMs}ms, ${callTrimmedMs}ms dropped this call")
+            log("[CALL_LATENCY] trimming standing backlog: queued=${totalMs}ms ring=${ringMs}ms, ${callTrimmedMs}ms dropped this call")
         }
     }
 
@@ -1318,7 +1328,14 @@ class DualStreamAudioManager(
 
                         // Pre-fill before first playback
                         if (!slot.started) {
-                            if (currentFillMs < prefillThresholdMs) continue
+                            // [227] Low-latency calls start at 40 ms: the start level stands all call.
+                            val prefillMs =
+                                if (slot.purpose == StreamPurpose.PHONE_CALL && callLowLatency) {
+                                    CallLatencyControl.PREFILL_MS
+                                } else {
+                                    prefillThresholdMs
+                                }
+                            if (currentFillMs < prefillMs) continue
                             slot.started = true
                             if (slot.purpose == StreamPurpose.PHONE_CALL) applyCallBufferMode(slot, track)
                             if (slot.pendingPlay) {
@@ -1360,7 +1377,7 @@ class DualStreamAudioManager(
                         }
 
                         // [226] Caller audio piling up behind a full call track: drop it in quiet frames.
-                        if (slot.purpose == StreamPurpose.PHONE_CALL && callLowLatency) trimCallBacklog(slot, currentFillMs)
+                        if (slot.purpose == StreamPurpose.PHONE_CALL && callLowLatency) trimCallBacklog(slot, track, currentFillMs)
 
                         // Retry residual from prior partial WRITE_NON_BLOCKING
                         if (slot.residualCount > 0) {

@@ -318,7 +318,10 @@ internal class CallEchoMonitor(
                 }
             }
         val delayMs = EchoDsp.median(delays)
-        val status = if (pnr >= PNR_MIN_DB && delayMs != null) Status.MATCH else Status.NO_MATCH
+        // [227] A real echo explains a fair share of the mic signal (v223: ncc 0.18-0.71). With the car's
+        // Voice_Uplink there is none, and GCC-PHAT still finds a 12 dB peak in noise now and then
+        // (v226: ncc 0.00-0.07 at random delays), which must not count as an echo.
+        val status = if (pnr >= PNR_MIN_DB && ncc >= NCC_MIN && delayMs != null) Status.MATCH else Status.NO_MATCH
         val m = Measurement(status, delayMs, echoDb, ncc, pnr, farDbfs, micDbfs)
         if (status == Status.MATCH) synchronized(lock) { matches.add(m) }
         return m
@@ -347,6 +350,7 @@ internal class CallEchoMonitor(
         private const val ANALYSIS_RATE = 8_000
         private const val PEAK_EXCLUDE_MS = 3
         private const val PNR_MIN_DB = 12.0
+        private const val NCC_MIN = 0.1
         private const val FAR_MIN_DBFS = -50.0
         private const val NANOS_PER_MS = 1_000_000L
 

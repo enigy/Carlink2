@@ -66,6 +66,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -78,6 +79,7 @@ import com.carlink.CarlinkManager
 import com.carlink.logging.FileLogManager
 import com.carlink.logging.logInfo
 import com.carlink.logging.logWarn
+import com.carlink.ui.components.FrostedGlassBackground
 import com.carlink.ui.components.LoadingSpinner
 import com.carlink.ui.settings.AdapterConfigPreference
 import com.carlink.ui.settings.AdapterConfigurationDialog
@@ -133,10 +135,21 @@ fun SettingsScreen(
 
     val view = LocalView.current
 
+    // Frosted glass over the connecting screen's background scene, in place of a solid surface.
+    // Follows Adapter Configuration → Visual → Background Logo as soon as it's saved.
+    val adapterConfig = remember { AdapterConfigPreference.getInstance(context) }
+    val backgroundLogo by adapterConfig.backgroundLogoFlow.collectAsStateWithLifecycle(
+        initialValue = remember { adapterConfig.getBackgroundLogoSync() },
+    )
+
+    // Transparent Surface: still sets LocalContentColor (onSurface) for every un-colored Text.
     Surface(
         modifier = Modifier.fillMaxSize(),
-        color = colorScheme.surface,
+        color = Color.Transparent,
+        contentColor = colorScheme.onSurface,
     ) {
+        FrostedGlassBackground(backgroundLogo = backgroundLogo)
+
         Row(
             modifier =
                 Modifier
@@ -172,7 +185,7 @@ fun SettingsScreen(
                 // Items centered vertically
                 NavigationRail(
                     modifier = Modifier.weight(1f),
-                    containerColor = colorScheme.surface,
+                    containerColor = Color.Transparent, // the glass shows through the rail too
                 ) {
                     Spacer(modifier = Modifier.weight(1f))
                     SettingsTab.visible.forEach { tab ->

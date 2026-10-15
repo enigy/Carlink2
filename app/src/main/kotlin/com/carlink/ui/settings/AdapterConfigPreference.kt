@@ -17,6 +17,7 @@ package com.carlink.ui.settings
 import android.content.ComponentName
 import android.content.Context
 import android.content.pm.PackageManager
+import androidx.annotation.DrawableRes
 import androidx.datastore.core.DataStore
 import java.io.IOException
 import androidx.datastore.preferences.core.Preferences
@@ -28,6 +29,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.carlink.BuildConfig
+import com.carlink.R
 import com.carlink.logging.logError
 import com.carlink.logging.logInfo
 import com.carlink.platform.PlatformDetector
@@ -205,12 +207,14 @@ enum class HandDriveConfig(
 enum class BackgroundLogoConfig(
     val code: String,
     val label: String,
+    /** The background scene with this logo: the connecting screen and the settings glass. */
+    @DrawableRes val drawableRes: Int,
 ) {
     /** The original background (res/drawable/loading_bg.webp). */
-    GMC("gmc", "GMC"),
+    GMC("gmc", "GMC", R.drawable.loading_bg),
 
     /** res/drawable-nodpi/loading_bg_chevrolet.jpg — same scene with the Chevrolet bowtie. */
-    CHEVROLET("chevrolet", "CHEVROLET"),
+    CHEVROLET("chevrolet", "CHEVROLET", R.drawable.loading_bg_chevrolet),
     ;
 
     companion object {

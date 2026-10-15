@@ -79,7 +79,6 @@ import com.carlink.ui.components.LoadingSpinner
 import com.carlink.ui.components.VideoSurface
 import com.carlink.ui.components.rememberVideoSurfaceState
 import com.carlink.ui.settings.AdapterConfigPreference
-import com.carlink.ui.settings.BackgroundLogoConfig
 import com.carlink.ui.settings.DisplayMode
 import com.carlink.ui.theme.AutomotiveDimens
 import kotlinx.coroutines.delay
@@ -393,14 +392,7 @@ fun MainScreen(
                 // (the image is ~2.49:1, so almost nothing is cropped) — no stretching.
                 // [216] Same scene for both logos (Chevrolet: 2000x805, also ~2.49:1).
                 Image(
-                    painter =
-                        painterResource(
-                            id =
-                                when (backgroundLogo) {
-                                    BackgroundLogoConfig.GMC -> R.drawable.loading_bg
-                                    BackgroundLogoConfig.CHEVROLET -> R.drawable.loading_bg_chevrolet
-                                },
-                        ),
+                    painter = painterResource(id = backgroundLogo.drawableRes),
                     contentDescription = null,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize(),

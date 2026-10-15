@@ -1754,6 +1754,21 @@
    - Affected: MainActivity.kt, CarlinkManager.kt, ui/MainScreen.kt, ui/SettingsScreen.kt, ui/settings/*, README.md,
      app/build.gradle.kts.
 
+[222] :: Settings page on frosted glass over the background scene, in place of the solid panel.
+   - Idea from upstream's [161] dashboard backdrop (blurred frame + scrim); here the glass is over the connecting
+     screen's scene, so it follows the Background Logo setting ([216]) and looks the same with or without a session.
+   - New ui/components/FrostedGlassBackground: the scene (ContentScale.Crop) blurred 28 dp with
+     BlurredEdgeTreatment.Rectangle, a surface tint at 45 %, and a tiled 128 px grain (alpha <= 22/255, fixed seed)
+     for the dithered look; the grain also hides blur banding. Below API 31 there is no blur, so the tint is 75 %.
+   - Opaque by construction (full-bleed image, solid blurred edges): the projection SurfaceView never shows through.
+     The scene is static (no fog), so the blurred layer is drawn once and reused.
+   - SettingsScreen: transparent Surface (contentColor still onSurface) and transparent NavigationRail over the glass.
+     Cards, dialogs and tab content are unchanged and stay opaque.
+   - BackgroundLogoConfig.drawableRes now maps the logo to its scene for both MainScreen and the glass.
+   - Compiled here; unit tests pass. Not run on hardware.
+   - Affected: ui/components/FrostedGlassBackground.kt (new), ui/SettingsScreen.kt, ui/MainScreen.kt,
+     ui/settings/AdapterConfigPreference.kt, app/build.gradle.kts.
+
 ==== Upstream lvalen91/carlink revisions [145]-[161], merged into this fork in [220]. Upstream numbers its
 ==== revisions separately from this fork; the entries below are upstream's own, kept verbatim. ====
 

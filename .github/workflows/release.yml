@@ -8,7 +8,9 @@ name: Release
 #   - Push a tag vNNN, where NNN == appVersionCode in app/build.gradle.kts (== the
 #     revisions.txt [NNN] entry): build, upload to the Internal testing track, GitHub Release.
 #   - Actions → Release → Run workflow: choose the track, or untick "Upload" to only build
-#     (the files are kept as a workflow artifact).
+#     (the files are kept as a workflow artifact). Run from any branch other than main, it only
+#     builds: no Play upload whatever the box says. The artifact also holds a sideloadable app APK
+#     (sideload/), signed with the upload key; it is not attached to GitHub Releases.
 #   Play rejects a versionCode it has already seen, so bump appVersionCode before each upload.
 #
 # Secrets (Settings → Secrets and variables → Actions → Secrets)
@@ -160,7 +162,7 @@ jobs:
         run: |
           set -o pipefail
           log="$RUNNER_TEMP/gradle.log"
-          if ! ./gradlew :app:bundleRelease :bridge:assembleRelease \
+          if ! ./gradlew :app:bundleRelease :app:assembleRelease :bridge:assembleRelease \
               -Pcarlink.buildRoot="$BUILD_ROOT" \
               -Pcarlink2.callerCerts="$CALLER_CERTS" 2>&1 | tee "$log"; then
             msg=$( { grep '^e: ' "$log"; sed -n '/What went wrong:/,/^\* Try:/p' "$log" | grep -v '^\* Try:'; } | head -40)
@@ -177,26 +179,30 @@ jobs:
         run: |
           code=$(sed -n 's/^ *val appVersionCode = \([0-9][0-9]*\)$/\1/p' app/build.gradle.kts)
           bridge=$(sed -n 's/^ *versionName = "\(.*\)"$/\1/p' bridge/build.gradle.kts)
-          mkdir -p dist
+          mkdir -p dist sideload
           cp "$BUILD_ROOT/app/outputs/bundle/release/app-release.aab" "dist/carlink2-v$code.aab"
           cp "$BUILD_ROOT/bridge/outputs/apk/release/bridge-release.apk" "dist/carlink2_bridge-$bridge.apk"
+          cp "$BUILD_ROOT/app/outputs/apk/release/app-release.apk" "sideload/carlink2-v$code.apk"
           cp "$BUILD_ROOT/app/outputs/mapping/release/mapping.txt" "dist/mapping-v$code.txt"
           echo "aab=dist/carlink2-v$code.aab" >> "$GITHUB_OUTPUT"
           echo "mapping=dist/mapping-v$code.txt" >> "$GITHUB_OUTPUT"
           echo "code=$code" >> "$GITHUB_OUTPUT"
-          (cd dist && sha256sum ./*.aab ./*.apk)
+          sha256sum dist/*.aab dist/*.apk sideload/*.apk
 
       - name: Keep the files as a workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: carlink2-v${{ steps.out.outputs.code }}
-          path: dist/
+          path: |
+            dist/
+            sideload/
 
-      # A tag push always uploads to Internal testing; a manual run uploads only if asked.
+      # A tag push always uploads to Internal testing; a manual run uploads only if asked, and only
+      # from main (test branches never reach Play).
       # status=completed fails while the app has never been rolled out on any track (Play
       # then only accepts drafts); after the first rollout it publishes to the track's testers.
       - name: Upload to Google Play
-        if: github.event_name == 'push' || inputs.upload
+        if: github.event_name == 'push' || (inputs.upload && github.ref == 'refs/heads/main')
         uses: r0adkll/upload-google-play@v1
         with:
           serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}

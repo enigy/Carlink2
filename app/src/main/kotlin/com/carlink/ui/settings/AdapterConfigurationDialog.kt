@@ -416,7 +416,7 @@ fun AdapterConfigurationDialog(
                                     text =
                                         when (selectedMicSource) {
                                             MicSourceConfig.APP -> "This device captures mic input via Android/OS"
-                                            MicSourceConfig.PHONE -> "Phone uses its own mic (or adapter mic if present)"
+                                            MicSourceConfig.PHONE -> "Phone uses its own mic"
                                         },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = colorScheme.primary,

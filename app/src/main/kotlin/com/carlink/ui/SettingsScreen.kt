@@ -293,7 +293,7 @@ fun SettingsScreen(
                 when (selectedTab) {
                     SettingsTab.CONTROL -> ControlTabContent(carlinkManager, onResetCluster, onReinitForDisplayMode)
                     SettingsTab.PHONES -> PhonesTabContent(carlinkManager)
-                    SettingsTab.LOGS -> LogsTabContent(context, fileLogManager)
+                    SettingsTab.LOGS -> LogsTabContent(context, fileLogManager, carlinkManager)
                 }
             }
         }

@@ -77,6 +77,9 @@ enum class AudioSourceConfig {
 /**
  * Microphone source configuration.
  * Controls which microphone is used for voice input (Siri, calls).
+ *
+ * [commandCode] is the persisted value. It started out as the command sent, but PHONE now sends
+ * UsePhoneMic(21) (see MessageSerializer.micCommand, [223]) and keeps 15 so saved settings load.
  */
 enum class MicSourceConfig(
     val commandCode: Int,
@@ -84,7 +87,7 @@ enum class MicSourceConfig(
     /** App/Device mic - this device (Android/Pi running the app) captures microphone input. */
     APP(7),
 
-    /** Phone/Adapter mic - phone uses its own mic, or adapter's mic if physically present. */
+    /** Phone mic - the phone records with its own mic (UsePhoneMic). */
     PHONE(15),
     ;
 

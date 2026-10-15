@@ -12,7 +12,10 @@ import com.carlink.BuildConfig
 import com.carlink.assistant.SiriDelegation
 import com.carlink.assistant.SiriRequestResult
 import com.carlink.assistant.SiriRequestTarget
+import com.carlink.audio.AudioFormats
+import com.carlink.audio.CallEchoMonitor
 import com.carlink.audio.DualStreamAudioManager
+import com.carlink.audio.MicFormats
 import com.carlink.audio.MicrophoneCaptureManager
 import com.carlink.gnss.GnssForwarder
 import com.carlink.cluster.ClusterBindingState
@@ -596,6 +599,10 @@ class CarlinkManager(
     private var currentMicAudioType = 3 // Siri/voice input
     private var lastIncomingDecodeType = 5 // Track adapter's current audio format (from incoming AudioData)
     private var micSendTimer: Timer? = null
+
+    // [223] In-call echo diagnostic: runs while a phone call has the mic (see syncEchoMonitor).
+    // Fed from the USB read thread (far end) and the mic send timer (uplink).
+    @Volatile private var callEchoMonitor: CallEchoMonitor? = null
 
     /**
      * Voice mode tracking for proper microphone lifecycle management.
@@ -1291,7 +1298,7 @@ class CarlinkManager(
                 micType =
                     when (userConfig.micSource) {
                         MicSourceConfig.APP -> "os"
-                        MicSourceConfig.PHONE -> "box"
+                        MicSourceConfig.PHONE -> "phone"
                     },
                 wifiType =
                     when (userConfig.wifiBand) {
@@ -3235,6 +3242,14 @@ class CarlinkManager(
         // Track adapter's current audio decodeType (for mic format negotiation)
         lastIncomingDecodeType = message.decodeType
 
+        // [223] Echo monitor: the far end's voice as it arrives, before our buffering.
+        callEchoMonitor?.let { monitor ->
+            val format = AudioFormats.fromDecodeType(message.decodeType)
+            if (isPhoneCallAudioActive && format.sampleRate == monitor.sampleRate && format.channelCount == 1) {
+                monitor.onDownlink(audioData, message.audioDataOffset, message.audioDataLength)
+            }
+        }
+
         // Write audio with offset+length to avoid copy
         // Two-factor routing: state flags + format match (not purpose) to prevent transition artifacts
         audioManager?.writeAudio(
@@ -3302,6 +3317,7 @@ class CarlinkManager(
                 endPurpose(StreamPurpose.RINGTONE, command) // Call answered — ringtone is over
                 setPurpose(StreamPurpose.PHONE_CALL, command)
                 startMicrophoneCapture(decodeType = micDecodeType, audioType = 3)
+                syncEchoMonitor()
             }
 
             AudioCommand.AUDIO_SIRI_STOP -> {
@@ -3402,6 +3418,7 @@ class CarlinkManager(
                     logInfo("[AUDIO_CMD] INPUT_CONFIG: switching mic from decodeType=$currentMicDecodeType to $messageDecodeType", tag = Logger.Tags.MIC)
                     stopMicrophoneCapture()
                     startMicrophoneCapture(decodeType = messageDecodeType, audioType = currentMicAudioType)
+                    syncEchoMonitor()
                 }
             }
 
@@ -3483,6 +3500,7 @@ class CarlinkManager(
     }
 
     private fun stopMicrophoneCapture() {
+        stopEchoMonitor()
         if (!isMicrophoneCapturing) return
 
         micSendTimer?.cancel()
@@ -3493,6 +3511,51 @@ class CarlinkManager(
 
         logInfo("Microphone capture stopped", tag = Logger.Tags.MIC)
     }
+
+    /**
+     * [223] Run the in-call echo monitor while a phone call has the mic, at the mic's rate
+     * (16 kHz CarPlay, 8 kHz Android Auto). Logs [ECHO_MON] lines every few seconds and a
+     * summary when the mic stops. Diagnostic only: it reads both directions and changes nothing.
+     */
+    private fun syncEchoMonitor() {
+        if (activeVoiceMode != VoiceMode.PHONECALL || !isMicrophoneCapturing) {
+            stopEchoMonitor()
+            return
+        }
+        val rate = MicFormats.fromDecodeType(currentMicDecodeType).sampleRate
+        if (callEchoMonitor?.sampleRate == rate) return
+        stopEchoMonitor()
+        callEchoMonitor =
+            CallEchoMonitor(
+                sampleRate = rate,
+                bufferStats = {
+                    "${audioManager?.callPathStats() ?: "call=n/a"} micBuf=${microphoneManager?.bufferLevelMs()}ms"
+                },
+                routing = {
+                    "out=${audioManager?.callTrackRouting()} ${microphoneManager?.routingInfo(platformAudioManager)} " +
+                        "mode=${platformAudioManager?.mode} mic=${microphoneManager?.voiceEffectStates()}"
+                },
+                log = { logInfo(it, tag = Logger.Tags.MIC) },
+            )
+        logInfo("[ECHO_MON] started (${rate}Hz)", tag = Logger.Tags.MIC)
+    }
+
+    private fun stopEchoMonitor() {
+        val monitor = callEchoMonitor ?: return
+        callEchoMonitor = null
+        monitor.stop()
+    }
+
+    /**
+     * Why the parked echo test (Settings → Logs) can't run right now, or null if it can. It plays
+     * through the call channel and records the mic, so it would collide with a call or Siri.
+     */
+    fun echoTestBlockedReason(): String? =
+        when {
+            isPhoneCallAudioActive -> "a phone call is active"
+            isSiriAudioActive || isMicrophoneCapturing -> "Siri or a call is using the microphone"
+            else -> null
+        }
 
     /**
      * Put the platform into MODE_IN_COMMUNICATION for a phone call.
@@ -3536,6 +3599,7 @@ class CarlinkManager(
         val chunkSize = if (currentMicDecodeType == 3) 320 else 640 // 20ms at 8kHz or 16kHz mono
         val data = microphoneManager?.readChunk(maxBytes = chunkSize) ?: return
         if (data.isNotEmpty()) {
+            callEchoMonitor?.onUplink(data)
             adapterDriver?.sendAudio(
                 data = data,
                 decodeType = currentMicDecodeType,

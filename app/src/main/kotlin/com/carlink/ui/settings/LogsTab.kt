@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.SaveAlt
 import androidx.compose.material.icons.filled.Tune
@@ -64,9 +65,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.carlink.CarlinkManager
+import com.carlink.audio.EchoTest
 import com.carlink.logging.FileExportService
 import com.carlink.logging.FileLogManager
 import com.carlink.logging.LogPreset
+import com.carlink.logging.Logger
 import com.carlink.logging.LoggingPreferences
 import com.carlink.logging.apply
 import com.carlink.logging.logError
@@ -101,6 +105,7 @@ import java.util.Locale
 internal fun LogsTabContent(
     context: android.content.Context,
     fileLogManager: FileLogManager?,
+    carlinkManager: CarlinkManager? = null,
 ) {
     val scope = rememberCoroutineScope()
     var logFiles by remember { mutableStateOf(emptyList<File>()) }
@@ -341,6 +346,8 @@ internal fun LogsTabContent(
                     }
                 }
             }
+
+            EchoTestCard(context, carlinkManager)
 
             // Log Files Card
             if (logFiles.isNotEmpty()) {
@@ -846,9 +853,75 @@ private fun LogPresetChip(
 }
 
 /**
+ * [223] Parked echo test (audio/EchoTest): plays test sweeps through the phone-call channel and
+ * records them back, to measure how much echo the far end would hear and how late — no call needed.
+ * The summary shows here; the details go to the log file under the MIC tag.
+ */
+@Composable
+private fun EchoTestCard(
+    context: android.content.Context,
+    carlinkManager: CarlinkManager?,
+) {
+    val scope = rememberCoroutineScope()
+    val colorScheme = MaterialTheme.colorScheme
+    var running by remember { mutableStateOf(false) }
+    var status by remember { mutableStateOf<String?>(null) }
+    var results by remember { mutableStateOf(emptyList<String>()) }
+
+    LoggingControlCard(
+        title = "Echo Test",
+        icon = Icons.Default.GraphicEq,
+    ) {
+        Text(
+            text =
+                "Plays test tones through the phone-call speakers and records them with the microphone, " +
+                    "to measure how much echo a caller would hear and how late. Takes about 30 seconds: " +
+                    "park, keep the cabin quiet and pause music. Details go to the log file " +
+                    "(log level Normal or Audio Only).",
+            style = MaterialTheme.typography.bodyMedium,
+            color = colorScheme.onSurfaceVariant,
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+        Button(
+            enabled = !running,
+            onClick = {
+                running = true
+                results = emptyList()
+                status = "Starting…"
+                scope.launch {
+                    val lines =
+                        withContext(Dispatchers.IO) {
+                            EchoTest(
+                                context.applicationContext,
+                                blockedReason = { carlinkManager?.echoTestBlockedReason() },
+                                log = { logInfo(it, tag = Logger.Tags.MIC) },
+                            ).run { status = it }
+                        }
+                    results = lines
+                    status = null
+                    running = false
+                }
+            },
+        ) {
+            Text(if (running) "Running…" else "Run echo test")
+        }
+        status?.let {
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(text = it, style = MaterialTheme.typography.bodyMedium)
+        }
+        if (results.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(12.dp))
+            results.forEach { line ->
+                Text(text = line, style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+    }
+}
+
+/**
  * Material 3 card container used as a section wrapper inside the Logs tab.
  * Renders an icon + title header followed by caller-provided [content] in a
- * padded column. Used for both the "File Logging" and "Log Files" sections.
+ * padded column. Used for the "File Logging", "Echo Test" and "Log Files" sections.
  */
 @Composable
 private fun LoggingControlCard(

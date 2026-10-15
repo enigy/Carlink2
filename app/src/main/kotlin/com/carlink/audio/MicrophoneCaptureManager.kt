@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.media.audiofx.AcousticEchoCanceler
@@ -362,6 +363,22 @@ class MicrophoneCaptureManager(
     fun voiceEffectStates(): String =
         "aec=${effectState(echoCanceler)} ns=${effectState(noiseSuppressor)} agc=${effectState(gainControl)}"
 
+    /**
+     * Diagnostic: where the capture session actually records from and which effects the platform
+     * applies to it on its own (audio_effects.xml pre-processing) besides the ones we attached.
+     * For the in-call echo monitor's one-time routing line.
+     */
+    @Suppress("SwallowedException") // a released recorder just reads as "released"
+    fun routingInfo(am: AudioManager?): String =
+        synchronized(lock) {
+            val record = audioRecord ?: return "mic=none"
+            try {
+                "in=${AudioRouteInfo.device(record.routedDevice)} " + AudioRouteInfo.recording(am, record.audioSessionId)
+            } catch (e: IllegalStateException) {
+                "mic=released"
+            }
+        }
+
     private fun effectState(effect: AudioEffect?): String =
         if (effect == null) {
             "none"
@@ -419,7 +436,7 @@ class MicrophoneCaptureManager(
                 if (aec != null) {
                     val status = aec.setEnabled(true)
                     echoCanceler = aec
-                    log("[MIC] AEC attached: enabled=${aec.enabled} setEnabledStatus=$status")
+                    log("[MIC] AEC attached: enabled=${aec.enabled} setEnabledStatus=$status impl=${AudioRouteInfo.effect(aec.descriptor)}")
                 } else {
                     log("[MIC] AEC available but create() returned null")
                 }
@@ -436,7 +453,7 @@ class MicrophoneCaptureManager(
                 if (ns != null) {
                     val status = ns.setEnabled(true)
                     noiseSuppressor = ns
-                    log("[MIC] NS attached: enabled=${ns.enabled} setEnabledStatus=$status")
+                    log("[MIC] NS attached: enabled=${ns.enabled} setEnabledStatus=$status impl=${AudioRouteInfo.effect(ns.descriptor)}")
                 } else {
                     log("[MIC] NS available but create() returned null")
                 }
@@ -453,7 +470,7 @@ class MicrophoneCaptureManager(
                 if (agc != null) {
                     val status = agc.setEnabled(true)
                     gainControl = agc
-                    log("[MIC] AGC attached: enabled=${agc.enabled} setEnabledStatus=$status")
+                    log("[MIC] AGC attached: enabled=${agc.enabled} setEnabledStatus=$status impl=${AudioRouteInfo.effect(agc.descriptor)}")
                 } else {
                     log("[MIC] AGC available but create() returned null")
                 }

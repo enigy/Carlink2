@@ -757,7 +757,7 @@ class MainActivity : ComponentActivity() {
             val micType =
                 when (userConfig.micSource) {
                     com.carlink.ui.settings.MicSourceConfig.APP -> "os"
-                    com.carlink.ui.settings.MicSourceConfig.PHONE -> "box"
+                    com.carlink.ui.settings.MicSourceConfig.PHONE -> "phone"
                 }
             val wifiType =
                 when (userConfig.wifiBand) {

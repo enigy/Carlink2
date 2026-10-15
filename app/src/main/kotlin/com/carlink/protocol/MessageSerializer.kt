@@ -108,6 +108,18 @@ object MessageSerializer {
         return serializeWithPayload(MessageType.COMMAND, payload)
     }
 
+    /**
+     * Mic source command for [AdapterConfig.micType]: "phone" → UsePhoneMic(21), the phone records
+     * with its own mic; "box" → UseBoxI2SMic(15), an adapter mic (the CPC200-CCPA has none);
+     * anything else → UseCarMic(7), the app records. [223]: the Phone setting used to send 15.
+     */
+    private fun micCommand(micType: String): CommandMapping =
+        when (micType) {
+            "phone" -> CommandMapping.USE_PHONE_MIC
+            "box" -> CommandMapping.BOX_MIC
+            else -> CommandMapping.MIC
+        }
+
     // ==================== Touch Messages ====================
 
     /**
@@ -747,13 +759,7 @@ object MessageSerializer {
                 }
 
                 ConfigKey.MIC_SOURCE -> {
-                    val command =
-                        if (config.micType == "box") {
-                            CommandMapping.BOX_MIC
-                        } else {
-                            CommandMapping.MIC
-                        }
-                    messages.add(serializeCommand(command))
+                    messages.add(serializeCommand(micCommand(config.micType)))
                 }
 
                 ConfigKey.WIFI_BAND -> {
@@ -828,8 +834,7 @@ object MessageSerializer {
         messages.add(serializeString(generateAirplayConfig(config), FileAddress.AIRPLAY_CONFIG))
 
         // Microphone source
-        val micCommand = if (config.micType == "box") CommandMapping.BOX_MIC else CommandMapping.MIC
-        messages.add(serializeCommand(micCommand))
+        messages.add(serializeCommand(micCommand(config.micType)))
 
         // Audio transfer mode
         val audioTransferCommand =

@@ -1769,6 +1769,34 @@
    - Affected: ui/components/FrostedGlassBackground.kt (new), ui/SettingsScreen.kt, ui/MainScreen.kt,
      ui/settings/AdapterConfigPreference.kt, app/build.gradle.kts.
 
+[223] :: Call echo diagnostics: a parked echo test and an in-call echo monitor (measure first, no audio fix yet).
+   - Why: callers hear themselves through CarPlay but not on iPhone speaker/AirPods, so nothing cancels echo on our
+     path. Candidates: GM's own canceller (Harman, below Android — our call path may not reach it), the adapter's
+     WebRTC AECM (it only looks inside the EchoLatency window, default 320 = ~120-320 ms; we never send echoDelay and
+     our round trip is probably longer and moving), and the iPhone (doesn't cancel for CarPlay mics). [193]/[194]
+     were never seen running ([197]). These two tools give the numbers to choose between them.
+   - Settings → Logs → Echo Test (audio/EchoTest): no call needed. Plays a 2 s up-sweep then a 1 s down-sweep on a
+     track set up like the call track (16 kHz mono, USAGE_VOICE_COMMUNICATION, platform buffer/perf mode) and records
+     them as: Call mic (VOICE_COMMUNICATION + AEC/NS/AGC, MODE_IN_COMMUNICATION — today's call path), the same in
+     MODE_NORMAL, Raw mic (AudioSource.MIC, no effects), and GM's Voice_Uplink input bus if listed. Logs per variant
+     the delay (write to AudioTrack → read from AudioRecord, split by HAL timestamps), the echo level at first and
+     once any canceller has adapted, the noise floor, routed devices and the effects the platform applies. Verdict
+     line: how much less echo the call mic has than the raw mic (= whether the platform cancels for us).
+   - In-call monitor (audio/CallEchoMonitor), runs while a phone call has the mic: taps the far-end audio as it
+     arrives from the adapter and the mic audio as it is sent back; every 3 s GCC-PHAT (8 kHz) finds the delay and
+     echo level. [ECHO_MON] lines carry delay, echo dB, ncc, levels and our buffering (call ring, AudioTrack buffer,
+     mic buffer); one routing line per call; a summary (median delay) when the call ends. Numbers only, no audio kept.
+     The median delay is what the adapter's echoDelay would have to match.
+   - Fix: the Phone mic setting sent UseBoxI2SMic(15) — an adapter mic the CPC200-CCPA doesn't have — instead of
+     UsePhoneMic(21). It now sends 21 (persisted value stays 15). With the phone's mic the adapter's AEC is off and the
+     iPhone records itself: a test of whether the echo is the car-mic path.
+   - [MIC] AEC/NS/AGC attach lines now name the effect implementation (GM/Harman vs AOSP).
+   - Compiled here; unit tests for the correlation, sweeps, timeline and monitor pass. Not run on hardware.
+   - Affected: audio/EchoDsp.kt, audio/EchoTest.kt, audio/CallEchoMonitor.kt, audio/AudioRouteInfo.kt (new),
+     audio/DualStreamAudioManager.kt, audio/MicrophoneCaptureManager.kt, CarlinkManager.kt, protocol/MessageSerializer.kt,
+     MainActivity.kt, ui/settings/LogsTab.kt, ui/settings/AdapterConfigPreference.kt,
+     ui/settings/AdapterConfigurationDialog.kt, ui/SettingsScreen.kt, app/build.gradle.kts.
+
 ==== Upstream lvalen91/carlink revisions [145]-[161], merged into this fork in [220]. Upstream numbers its
 ==== revisions separately from this fork; the entries below are upstream's own, kept verbatim. ====
 

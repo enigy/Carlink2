@@ -803,6 +803,34 @@ class DualStreamAudioManager(
         }
     }
 
+    /**
+     * Diagnostic: the call slot's buffering right now, for the in-call echo monitor's delay
+     * breakdown. ring = far-end audio waiting in our ring buffer; trackBuf = the AudioTrack's
+     * buffer, which the playback loop keeps full while the ring has data (trackFull = a write
+     * is waiting for room). Read without the lock: numbers only, may be a pass stale.
+     */
+    @Suppress("SwallowedException") // a released track just reads as "released"
+    fun callPathStats(): String {
+        val slot = phoneCallSlot ?: return "call=none"
+        val ringMs = slot.buffer.fillLevelMs()
+        return try {
+            val track = slot.track ?: return "ring=${ringMs}ms track=none"
+            val bufMs = track.bufferSizeInFrames * 1000L / track.sampleRate
+            "ring=${ringMs}ms trackBuf=${bufMs}ms trackFull=${slot.residualCount > 0} underruns=${track.underrunCount}"
+        } catch (e: IllegalStateException) {
+            "ring=${ringMs}ms track=released"
+        }
+    }
+
+    /** Diagnostic: the device the call track is actually routed to. */
+    @Suppress("SwallowedException")
+    fun callTrackRouting(): String =
+        try {
+            AudioRouteInfo.device(phoneCallSlot?.track?.routedDevice)
+        } catch (e: IllegalStateException) {
+            "released"
+        }
+
     /** Stop playback and release all resources. */
     fun release() {
         synchronized(lock) {

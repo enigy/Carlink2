@@ -59,11 +59,11 @@ jobs:
       BUILD_ROOT: ${{ github.workspace }}/build-out
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # Bootstraps Gradle; gradle-daemon-jvm.properties then provisions the daemon JVM.
       - name: Set up JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'
@@ -103,13 +103,53 @@ jobs:
             echo "keyPassword=$(esc "$KEY_PASSWORD")"
           } > keystore.properties
 
+      # Fail early, naming the secret that's wrong, instead of deep inside the Gradle signing
+      # task. The key password is proven by signing a throwaway jar: keytool ignores -keypass
+      # for PKCS12 keystores, but the build's signer doesn't.
+      - name: Check the upload key
+        env:
+          STORE_PASSWORD: ${{ secrets.CARLINK_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CARLINK_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.CARLINK_KEY_PASSWORD }}
+        run: |
+          ks="$RUNNER_TEMP/upload.jks"
+          if ! keytool -list -keystore "$ks" -storepass "$STORE_PASSWORD" > /dev/null 2>&1; then
+            echo "::error title=Upload key::Can't open the keystore. Either CARLINK_KEYSTORE_BASE64 isn't a base64 keystore (encode the .jks with: base64 -i upload.jks) or CARLINK_KEYSTORE_PASSWORD is wrong."
+            exit 1
+          fi
+          if ! keytool -list -keystore "$ks" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" > /dev/null 2>&1; then
+            aliases=$(keytool -list -v -keystore "$ks" -storepass "$STORE_PASSWORD" 2>/dev/null | sed -n 's/^Alias name: //p' | paste -sd, -)
+            echo "::error title=Upload key::CARLINK_KEY_ALIAS isn't in the keystore. Aliases in it: $aliases"
+            exit 1
+          fi
+          probe="$RUNNER_TEMP/keyprobe"
+          mkdir -p "$probe" && printf 'probe' > "$probe/probe.txt"
+          (cd "$probe" && jar cf probe.jar probe.txt)
+          if ! jarsigner -keystore "$ks" -storepass "$STORE_PASSWORD" -keypass "$KEY_PASSWORD" "$probe/probe.jar" "$KEY_ALIAS" > /dev/null 2>&1; then
+            echo "::error title=Upload key::CARLINK_KEY_PASSWORD doesn't unlock key '$KEY_ALIAS' (for many keystores it's the same as the keystore password)."
+            exit 1
+          fi
+          echo "Upload key OK: alias '$KEY_ALIAS'"
+
+      # On failure, Gradle's "What went wrong" goes into a run annotation: those are readable on
+      # the run page without signing in, unlike the log.
       - name: Build AAB and bridge APK
         env:
           CALLER_CERTS: ${{ vars.CARLINK2_CALLER_CERTS }}
-        run: >
-          ./gradlew :app:bundleRelease :bridge:assembleRelease
-          -Pcarlink.buildRoot="$BUILD_ROOT"
-          -Pcarlink2.callerCerts="$CALLER_CERTS"
+        run: |
+          set -o pipefail
+          log="$RUNNER_TEMP/gradle.log"
+          if ! ./gradlew :app:bundleRelease :bridge:assembleRelease \
+              -Pcarlink.buildRoot="$BUILD_ROOT" \
+              -Pcarlink2.callerCerts="$CALLER_CERTS" 2>&1 | tee "$log"; then
+            msg=$( { grep '^e: ' "$log"; sed -n '/What went wrong:/,/^\* Try:/p' "$log" | grep -v '^\* Try:'; } | head -40)
+            [ -n "$msg" ] || msg=$(tail -40 "$log")
+            msg=${msg//'%'/'%25'}
+            msg=${msg//$'\r'/'%0D'}
+            msg=${msg//$'\n'/'%0A'}
+            echo "::error title=Gradle build failed::$msg"
+            exit 1
+          fi
 
       - name: Collect outputs
         id: out

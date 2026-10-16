@@ -1888,6 +1888,38 @@
    - Affected: audio/CallLatencyControl.kt, audio/DualStreamAudioManager.kt, audio/CallEchoMonitor.kt,
      audio/VoiceTest.kt, app/build.gradle.kts.
 
+[228] :: Phone search keeps retrying every ~20 s instead of once; log why the main screen gets recreated.
+   - On-truck v227 (2026-10-16). Truck started 06:41, driver in from ~06:45, phone streaming at 06:48:38.
+     Each adapter search tries both paired iPhones for ~5 s each, then DEVICE_NOT_FOUND. [206] restarted the
+     session once 20 s after the first miss; after that the adapter sat in pairing mode, silent, until the 60 s
+     watchdog: searches 76–88 s apart (06:42:51, 06:44:08, 06:45:29, 06:46:57, 06:48:13). The 06:48:13 session
+     got WIFI_CONNECTED at init and PLUGGED 2.7 s later. 08:00: the first search missed; the restart 20 s later
+     found the phone 1.4 s into its search (streaming 54 s after the screen came on).
+   - Phone search: DEVICE_NOT_FOUND re-arms every time (up to 40 retries per stop(), ~13 min), 8 s after the
+     miss (was 20 s). A retry sends StartAutoConnect (1002) on the open session, so the heartbeat never pauses; if
+     the adapter doesn't answer with SCANNING_DEVICE within 3 s, or on every 3rd retry, the session restarts as in
+     [206] (reconnect after 2 s each time, no backoff growth). WIFI_CONNECTED with no PLUGGED restarts the session
+     after 10 s (2026-10-09 20:57 sat 40 s like that). BT_CONNECTED / DEVICE_FOUND still push the deadline 20 s.
+     No paired phones: [206] unchanged (one restart after 20 s), as pairing mode is the only way in.
+   - [206]'s once-only limit came from [167]: re-scans wedged the adapter into a watchdog reboot, whose
+     re-enumeration then needed a new USB permission prompt. Through the bridge that grant is silent ([209]).
+     06:46:50 today the adapter did reboot once, during a 16 s reconnect backoff; it came back with perm=true.
+   - 06:48:18 the phone reached PLUGGED; at 06:48:21 MainActivity was destroyed and recreated within 150 ms,
+     which released CarlinkManager and closed the session (streaming again 06:48:38). It followed the cluster
+     refresh's CarAppActivity relaunch by 0.5 s; the same relaunch at 06:48:37 and 08:01:16 didn't do it. The log
+     doesn't say why ([209] saw one too). Now: onDestroy logs finishing / recreating / the changing configurations
+     (ConfigChanges names the bits, including hidden assetsPaths and windowConfiguration) before the file log
+     closes; onConfigurationChanged logs what changed in place. configChanges gains mcc, mnc, touchscreen,
+     navigation, colorMode and fontWeightAdjustment, so none of those recreates the activity.
+   - Not changed: the adapter also tries the second paired iPhone ("iPhone", 70:96:84:C1:6A:DE, last used
+     2026-10-14) for 5 s on every search; forgetting it in Settings → Phones shortens each search.
+   - To check on the truck: [PHONE_SEARCH] "searching again" followed by SCANNING_DEVICE (StartAutoConnect
+     accepted mid-session), restarts every 3rd retry, and whether repeated searches reboot the adapter. Pairing a
+     new phone while a paired one is away may be harder now: pairing mode lasts only until the next retry.
+   - Compiled here; unit tests pass (37). Not run on hardware.
+   - Affected: CarlinkManager.kt, MainActivity.kt, platform/ConfigChanges.kt, AndroidManifest.xml,
+     app/build.gradle.kts.
+
 ==== Upstream lvalen91/carlink revisions [145]-[161], merged into this fork in [220]. Upstream numbers its
 ==== revisions separately from this fork; the entries below are upstream's own, kept verbatim. ====
 

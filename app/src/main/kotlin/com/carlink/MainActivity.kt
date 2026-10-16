@@ -10,6 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.hardware.display.DisplayManager
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
@@ -61,6 +62,7 @@ import com.carlink.media.MediaSessionManager
 import com.carlink.util.LogCallback
 import com.carlink.util.WindowMetricsCompat
 import com.carlink.navigation.NavigationStateManager
+import com.carlink.platform.ConfigChanges
 import com.carlink.protocol.AdapterConfig
 import com.carlink.protocol.KnownDevices
 import com.carlink.ui.MainScreen
@@ -113,6 +115,9 @@ class MainActivity : ComponentActivity() {
     // is destroyed before initialization completes (e.g., low memory kill)
     private var carlinkManager: CarlinkManager? = null
     private var fileLogManager: FileLogManager? = null
+
+    // [228] The configuration last seen, so onConfigurationChanged can log what changed.
+    private var lastConfiguration: Configuration? = null
 
     /**
      * App-scope MediaSession reference. Owned and lifecycle-managed by
@@ -464,6 +469,8 @@ class MainActivity : ComponentActivity() {
         // BufferQueue can stall. Resume codec and request keyframe for immediate video.
         logInfo("[LIFECYCLE] onStart - resuming video", tag = "MAIN")
         carlinkManager?.resumeVideo()
+        // [228] Baseline for onConfigurationChanged's diff.
+        if (lastConfiguration == null) lastConfiguration = Configuration(resources.configuration)
     }
 
     override fun onStop() {
@@ -500,7 +507,27 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * [228] Changes declared in the manifest's configChanges arrive here instead of recreating the
+     * activity. Logged so the next unexpected recreation can be compared with what normally changes.
+     */
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        val previous = lastConfiguration
+        lastConfiguration = Configuration(newConfig)
+        val changes = previous?.let { ConfigChanges.describe(it.diff(newConfig)) } ?: "unknown"
+        logInfo("[LIFECYCLE] Configuration changed in place: $changes", tag = "MAIN")
+    }
+
     override fun onDestroy() {
+        // [228] First, while the file log is still open. Truck 2026-10-16 06:48:21: the activity was
+        // destroyed and recreated 3 s after the phone connected, which closed that session; the log
+        // didn't say why. changingConfigurations names the configuration change behind a recreation.
+        logInfo(
+            "[LIFECYCLE] onDestroy (finishing=$isFinishing, recreating=$isChangingConfigurations, " +
+                "changes=${ConfigChanges.describe(changingConfigurations)}, task=$taskId)",
+            tag = "MAIN",
+        )
         super.onDestroy()
 
         // Stop the cluster-session watchdog

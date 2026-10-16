@@ -203,10 +203,37 @@ class CarlinkManager(
         private const val PROMPT_WAIT_MS = 120_000L
 
         // [206] Before the first phone connects, after the adapter reports DEVICE_NOT_FOUND:
-        // restart the adapter session once if no phone has connected this long after the last
-        // sign of progress. Truck log 2026-10-09 20:57: the first search failed and the adapter
-        // sat silent until the 60s watchdog; the restarted session found the phone in 2s.
-        private const val PHONE_SEARCH_RETRY_MS = 20_000L
+        // search again if no phone has connected this long after the miss. Truck log 2026-10-09
+        // 20:57: the first search failed and the adapter sat silent until the 60s watchdog; the
+        // restarted session found the phone in 2s.
+        // [228] 20 s → 8 s, and no longer once only: the adapter doesn't search again on its own,
+        // so after [206]'s one retry a phone that turned up waited for the 60 s watchdog — searches
+        // 76–88 s apart (truck 2026-10-16 06:42–06:48, driver in the truck from ~06:45). 08:00 the
+        // same day: the first search missed, the retry 20 s later found the phone in 1.4 s.
+        private const val PHONE_SEARCH_RETRY_MS = 8_000L
+
+        // [228] After a sign of progress (BT_CONNECTED, DEVICE_FOUND) the deadline moves out this
+        // far instead, so a phone that is connecting (or pairing) isn't cut off. Also [206]'s
+        // delay, kept for an adapter with no paired phones, where pairing is the only way in.
+        private const val PHONE_SEARCH_PROGRESS_MS = 20_000L
+
+        // [228] The phone joined the adapter's Wi-Fi but no PLUGGED followed: restart the session
+        // this long after. 2026-10-09 20:57 sat 40 s like that; the next session started CarPlay
+        // in 2 s (also 2026-10-16 06:48:15: WIFI_CONNECTED at init, PLUGGED 2.7 s later).
+        private const val PHONE_SEARCH_WIFI_MS = 10_000L
+
+        // [228] Retries are a new search on the open session (StartAutoConnect, 1002), which keeps
+        // the heartbeat flowing. Every Nth retry restarts the session instead, as [206] did.
+        private const val PHONE_SEARCH_RESTART_EVERY = 3
+
+        // [228] If the adapter doesn't answer StartAutoConnect with SCANNING_DEVICE this fast,
+        // restart the session instead.
+        private const val PHONE_SEARCH_ACK_MS = 3_000L
+
+        // [228] Retries per fresh start (stop()). ~20 s apart, so about 13 min of a truck running
+        // without the phone; after that the 60 s watchdog cadence as before. One for an adapter
+        // with no paired phones ([206]).
+        private const val PHONE_SEARCH_MAX_RETRIES = 40
 
         private const val PROMPT_STATUS = "Approve the USB access prompt"
         private const val REPLUG_STATUS = "Unplug and replug the adapter"
@@ -479,11 +506,14 @@ class CarlinkManager(
     // disconnect within milliseconds; only the first may tear the session down.
     private val sessionLive = AtomicBoolean(false)
 
-    // [206] The one quick session restart for a phone the adapter couldn't find — see
-    // PHONE_SEARCH_RETRY_MS. Reset by stop() (fresh start / Reset Device).
+    // [206]/[228] Phone search retries for a phone the adapter couldn't find — see
+    // PHONE_SEARCH_RETRY_MS. The count resets in stop() (fresh start / Reset Device).
     @Volatile private var phoneSearchJob: Job? = null
 
-    @Volatile private var quickPhoneRetryUsed = false
+    @Volatile private var phoneSearchRetries = 0
+
+    // [228] Waits for SCANNING_DEVICE after a StartAutoConnect retry; restarts the session if none.
+    @Volatile private var phoneSearchAckJob: Job? = null
 
     // elapsedRealtime of the first bridge attempt that found the bridge without permission for
     // the attached adapter; 0 = not currently in that state. See BRIDGE_PERMISSION_GRACE_MS.
@@ -1578,7 +1608,7 @@ class CarlinkManager(
         sessionLive.set(false) // a late error from this session must not tear down or reconnect
         cancelPhoneSearchRetry()
         cancelCarPlayStartCheck()
-        quickPhoneRetryUsed = false // fresh start / Reset Device earns a new quick retry
+        phoneSearchRetries = 0 // fresh start / Reset Device earns new phone search retries
         clearPairTimeout()
         cancelUnplugGrace() // Tearing down — drop any pending post-unplug re-initiate
         cancelWakeConnect() // and any pending wake-settle connect
@@ -1814,52 +1844,115 @@ class CarlinkManager(
     }
 
     /**
-     * [206] The adapter reported it couldn't find the phone before any phone connected: restart
-     * the adapter session once if none connects within [PHONE_SEARCH_RETRY_MS]. Later signs of
-     * progress push the deadline out ([extendPhoneSearchRetry]); PLUGGED cancels it.
+     * [206] The adapter reported it couldn't find the phone before any phone connected: search
+     * again if none connects within [PHONE_SEARCH_RETRY_MS]. Signs of progress push the deadline
+     * out ([extendPhoneSearchRetry]); PLUGGED cancels it.
      *
-     * Once only until [stop]: for a phone that really isn't there, repeated re-scans are what
-     * wedge the adapter into a watchdog reboot (see [onPhoneUnpluggedGently]), so after one
-     * retry the 60 s silence watchdog applies as before. Never once a phone has connected in
-     * this session ([hadPriorSession]): then the gentle unplug handling keeps the session open
-     * for the adapter's own re-pair.
+     * [228] Every miss re-arms, up to [PHONE_SEARCH_MAX_RETRIES] per [stop]. A retry asks the open
+     * session for a new search (StartAutoConnect, [searchAgainForPhone]): no USB teardown, so the
+     * heartbeat that satisfies the adapter's host watchdog never pauses. Every
+     * [PHONE_SEARCH_RESTART_EVERY]th retry, and a [restart] request, restarts the session instead,
+     * as [206] did. [206] retried once because repeated re-scans had wedged the adapter into a
+     * watchdog reboot ([167]); the re-enumeration that followed then needed a new USB permission
+     * prompt, and through the bridge it's granted silently ([209]).
+     *
+     * Never once a phone has connected in this session ([hadPriorSession]): then the gentle unplug
+     * handling keeps the session open for the adapter's own re-pair. With no paired phones the
+     * adapter's pairing mode is the only way in, so [206]'s single restart after 20 s stays.
      */
-    private fun armPhoneSearchRetry(trigger: String) {
-        if (quickPhoneRetryUsed || hadPriorSession) return
-        if (state == State.DEVICE_CONNECTED || state == State.STREAMING) return
-        val rearm = phoneSearchJob?.isActive == true
-        phoneSearchJob?.cancel()
+    private fun armPhoneSearchRetry(
+        trigger: String,
+        delayMs: Long = PHONE_SEARCH_RETRY_MS,
+        restart: Boolean = false,
+    ) {
+        if (!phoneSearchAllowed()) return
+        val unpaired = _deviceList.isEmpty()
+        val waitMs = if (unpaired) maxOf(delayMs, PHONE_SEARCH_PROGRESS_MS) else delayMs
+        val fullRestart = restart || unpaired || (phoneSearchRetries + 1) % PHONE_SEARCH_RESTART_EVERY == 0
+        val rearm = phoneSearchJob?.isActive == true || phoneSearchAckJob?.isActive == true
+        cancelPhoneSearchRetry()
         phoneSearchJob =
-            scope.launch {
-                delay(PHONE_SEARCH_RETRY_MS)
-                if (quickPhoneRetryUsed || hadPriorSession) return@launch
-                if (state == State.DEVICE_CONNECTED || state == State.STREAMING) return@launch
-                quickPhoneRetryUsed = true
-                logWarn(
-                    "[PHONE_SEARCH] No phone ${PHONE_SEARCH_RETRY_MS / 1000}s after $trigger — " +
-                        "restarting the adapter session (once)",
-                    tag = Logger.Tags.ADAPTR,
-                )
-                setStatusText("Phone not found — retrying…")
-                // "USB" in the message routes it through isUsbDisconnectError → scheduleReconnect,
-                // the same path as the silence watchdog that recovered the 2026-10-09 case.
-                handleError("Phone not found — restarting the USB session")
+            scope.launch(Dispatchers.IO) { // the retry writes to USB
+                delay(waitMs)
+                if (!phoneSearchAllowed()) return@launch
+                phoneSearchRetries++
+                val reason = "No phone ${waitMs / 1000}s after $trigger"
+                if (fullRestart) restartForPhoneSearch(reason) else searchAgainForPhone(reason)
             }
         logInfo(
-            "[PHONE_SEARCH] ${if (rearm) "Re-armed" else "Armed"} on $trigger: restarting the session in " +
-                "${PHONE_SEARCH_RETRY_MS / 1000}s unless a phone connects",
+            "[PHONE_SEARCH] ${if (rearm) "Re-armed" else "Armed"} on $trigger: " +
+                "${if (fullRestart) "restarting the session" else "searching again"} in ${waitMs / 1000}s " +
+                "unless a phone connects (retry ${phoneSearchRetries + 1}/${phoneSearchLimit()})",
             tag = Logger.Tags.ADAPTR,
         )
     }
 
+    private fun phoneSearchLimit(): Int = if (_deviceList.isEmpty()) 1 else PHONE_SEARCH_MAX_RETRIES
+
+    private fun phoneSearchAllowed(): Boolean =
+        !hadPriorSession &&
+            state != State.DEVICE_CONNECTED &&
+            state != State.STREAMING &&
+            phoneSearchRetries < phoneSearchLimit()
+
+    /** [228] New search on the open session; restarts it if the adapter doesn't start one. */
+    private fun searchAgainForPhone(reason: String) {
+        logInfo(
+            "[PHONE_SEARCH] $reason — searching again ($phoneSearchRetries/${phoneSearchLimit()})",
+            tag = Logger.Tags.ADAPTR,
+        )
+        setStatusText("Phone not found — retrying…")
+        // Armed before sending: SCANNING_DEVICE can arrive ~30 ms after the command.
+        val ack =
+            scope.launch(Dispatchers.IO) {
+                delay(PHONE_SEARCH_ACK_MS)
+                if (hadPriorSession || state == State.DEVICE_CONNECTED || state == State.STREAMING) return@launch
+                restartForPhoneSearch("No SCANNING_DEVICE ${PHONE_SEARCH_ACK_MS / 1000}s after StartAutoConnect")
+            }
+        phoneSearchAckJob = ack
+        if (adapterDriver?.sendCommand(CommandMapping.WIFI_CONNECT) != true) {
+            ack.cancel()
+            restartForPhoneSearch("StartAutoConnect not sent")
+        }
+    }
+
+    /** [206] Restart the adapter session; the new session's auto-connect searches for the phone. */
+    private fun restartForPhoneSearch(reason: String) {
+        logWarn(
+            "[PHONE_SEARCH] $reason — restarting the adapter session ($phoneSearchRetries/${phoneSearchLimit()})",
+            tag = Logger.Tags.ADAPTR,
+        )
+        setStatusText("Phone not found — retrying…")
+        // [228] A planned restart, not a failure: reconnect after the first backoff step (2 s) each time.
+        reconnectAttempts = 0
+        // "USB" in the message routes it through isUsbDisconnectError → scheduleReconnect,
+        // the same path as the silence watchdog that recovered the 2026-10-09 case.
+        handleError("Phone not found — restarting the USB session")
+    }
+
     /** Push an armed phone-search deadline out after a sign of progress. */
     private fun extendPhoneSearchRetry(trigger: String) {
-        if (phoneSearchJob?.isActive == true) armPhoneSearchRetry(trigger)
+        if (phoneSearchArmed()) armPhoneSearchRetry(trigger, PHONE_SEARCH_PROGRESS_MS)
     }
+
+    /** [228] The phone is on the adapter's Wi-Fi without PLUGGED: restart the session soon. */
+    private fun onPhoneSearchWifiConnected(trigger: String) {
+        if (phoneSearchArmed()) armPhoneSearchRetry(trigger, PHONE_SEARCH_WIFI_MS, restart = true)
+    }
+
+    /** [228] The adapter started the search a retry asked for. */
+    private fun onPhoneSearchScanning() {
+        phoneSearchAckJob?.cancel()
+        phoneSearchAckJob = null
+    }
+
+    private fun phoneSearchArmed(): Boolean = phoneSearchJob?.isActive == true || phoneSearchAckJob?.isActive == true
 
     private fun cancelPhoneSearchRetry() {
         phoneSearchJob?.cancel()
         phoneSearchJob = null
+        phoneSearchAckJob?.cancel()
+        phoneSearchAckJob = null
     }
 
     /**
@@ -2947,6 +3040,7 @@ class CarlinkManager(
                     } else {
                         setStatusText("Scanning for phone...")
                     }
+                    onPhoneSearchScanning()
                     logDebug("[CMD] SCANNING_DEVICE", tag = Logger.Tags.ADAPTR)
                 } else if (message.command == CommandMapping.BT_CONNECTED ||
                     message.command == CommandMapping.DEVICE_FOUND
@@ -2958,7 +3052,7 @@ class CarlinkManager(
                     armPhoneSearchRetry(message.command.name)
                     logDebug("[CMD] ${message.command.name} (id=${message.rawId})", tag = Logger.Tags.ADAPTR)
                 } else if (message.command == CommandMapping.WIFI_CONNECTED) {
-                    extendPhoneSearchRetry(message.command.name)
+                    onPhoneSearchWifiConnected(message.command.name)
                     logDebug("[CMD] ${message.command.name} (id=${message.rawId})", tag = Logger.Tags.ADAPTR)
                 } else if (message.command == CommandMapping.REQUEST_NAVI_SCREEN_FOCUS) {
                     // Step 3 of the three-step 508 handshake: adapter sent 508 back in reply to

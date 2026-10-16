@@ -122,11 +122,12 @@
             </intent-filter>
         </service>
 
-        <!-- Main Activity -->
+        <!-- Main Activity. [228] configChanges lists every declarable change: a recreation
+             releases CarlinkManager and drops the adapter session (truck 2026-10-16 06:48:21). -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode|mcc|mnc|touchscreen|navigation|colorMode|fontWeightAdjustment"
             android:hardwareAccelerated="true"
             android:launchMode="singleTop"
             android:theme="@style/Theme.CarlinkNative.Fullscreen"

@@ -20,8 +20,8 @@ import androidx.core.view.WindowCompat
 // surfaceVariant/surfaceContainerHighest tones into any composable reading them directly
 // (confirmed live: forcing system night mode on made the leak disappear). Don't reintroduce a
 // light/system-following scheme without also auditing every `MaterialTheme.colorScheme.*` use.
-// (`isSystemInDarkTheme()` in MainScreen.kt drives the separate CarPlay night-mode protocol
-// message to the phone; it has nothing to do with this app's own rendering.)
+// ([231] Upstream [160]'s forwarding of this signal to CarPlay as the night-mode command was
+// reverted; CarPlay decides its own day/night appearance again.)
 
 /**
  * Dark color scheme chosen for this project; no automotive-specific luminance/glare tuning

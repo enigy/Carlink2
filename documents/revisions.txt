@@ -1964,6 +1964,16 @@
    - Affected: ui/components/DialogSystemBars.kt (new), ui/settings/AdapterConfigurationDialog.kt,
      ui/settings/DisplayModeDialog.kt, ui/SettingsScreen.kt, ui/settings/LogsTab.kt, ui/settings/PhonesTab.kt,
      app/build.gradle.kts.
+   - Released with [231] (not built on its own for Play).
+
+[231] :: Revert upstream [160]'s CarPlay night-mode forwarding; CarPlay picks its own day/night appearance again.
+   - Upstream [160] (merged in [220]) sent ENABLE_NIGHT_MODE / DISABLE_NIGHT_MODE to the phone from AAOS's
+     isSystemInDarkTheme(): when a session reached STREAMING and on every system theme change. Removed at the
+     driver's request: MainScreen's LaunchedEffect and CarlinkManager.setNightMode(). The commands stay defined
+     in CommandMapping, unused.
+   - Kept from [160]: the NAV_BAR_HIDDEN safe-area fix and the permanently dark app theme (unrelated to the flag).
+   - Compiled here; unit tests pass (43). Not run on hardware.
+   - Affected: ui/MainScreen.kt, CarlinkManager.kt, ui/theme/Theme.kt (comment), app/build.gradle.kts.
 
 ==== Upstream lvalen91/carlink revisions [145]-[161], merged into this fork in [220]. Upstream numbers its
 ==== revisions separately from this fork; the entries below are upstream's own, kept verbatim. ====

@@ -12,7 +12,6 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -129,17 +128,6 @@ fun MainScreen(
             onPhoneConnected()
         } else if (connectionState == CarlinkManager.State.DISCONNECTED) {
             connectNotified = false
-        }
-    }
-
-    // Forward the AAOS day/night state to CarPlay (upstream [160]). Fires when a session reaches
-    // STREAMING (initial sync) and whenever the system theme toggles mid-session
-    // (isSystemInDarkTheme recomposes because MainActivity handles the uiMode config change
-    // without recreating). Drives ONLY the phone-bound night-mode command.
-    val systemNight = isSystemInDarkTheme()
-    LaunchedEffect(systemNight, connectionState) {
-        if (connectionState == CarlinkManager.State.STREAMING) {
-            carlinkManager.setNightMode(systemNight)
         }
     }
 

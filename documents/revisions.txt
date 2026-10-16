@@ -1916,7 +1916,8 @@
    - To check on the truck: [PHONE_SEARCH] "searching again" followed by SCANNING_DEVICE (StartAutoConnect
      accepted mid-session), restarts every 3rd retry, and whether repeated searches reboot the adapter. Pairing a
      new phone while a paired one is away may be harder now: pairing mode lasts only until the next retry.
-   - Compiled here; unit tests pass (37). Not run on hardware.
+   - Compiled here; unit tests pass (37). Sideload on the truck 2026-10-16: initial test fine (driver's report,
+     no log yet); released to Play internal for daily driving.
    - Affected: CarlinkManager.kt, MainActivity.kt, platform/ConfigChanges.kt, AndroidManifest.xml,
      app/build.gradle.kts.
 

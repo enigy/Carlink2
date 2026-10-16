@@ -68,10 +68,11 @@ Numbers in brackets are entries in [documents/revisions.txt](documents/revisions
   on, choose **Carlink2 Siri** as the default assistant in the truck's settings ([217], [218]). New,
   and still being confirmed on the truck.
   See [documents/reference/siri_voice_integration.md](documents/reference/siri_voice_integration.md).
+- Voice calls (Phone or App based) are not routed through the GM VoiceUplink audio path.  The result is much clearer audio for the recipient.  Woot!
 
 ## Known issues
 
-- **Voice phone calls are hard to hear for the other person.** Researching audio and echo-cancellation options.
+- None at the moment.
 
 > [!IMPORTANT]
 > My 2025 GMC Sierra with HUD (gminfo3.7, Intel, AAOS) is the target platform and my only hardware

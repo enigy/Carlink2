@@ -78,6 +78,7 @@ import com.carlink.CarlinkManager
 import com.carlink.audio.AudioRouteInfo
 import com.carlink.logging.logInfo
 import com.carlink.logging.logWarn
+import com.carlink.ui.components.DialogSystemBars
 import com.carlink.ui.theme.AutomotiveDimens
 import com.carlink.util.WindowMetricsCompat
 import kotlinx.coroutines.CoroutineScope
@@ -289,6 +290,7 @@ fun AdapterConfigurationDialog(
     val dialogMaxWidth = (containerWidthDp * 0.6f).coerceIn(320.dp, 600.dp)
 
     Dialog(onDismissRequest = onDismiss) {
+        DialogSystemBars() // [230] keep the head unit's bars hidden while this window has focus
         Surface(
             shape = MaterialTheme.shapes.extraLarge,
             color = colorScheme.surfaceContainerHigh,
@@ -979,6 +981,7 @@ fun AdapterConfigurationDialog(
                                 AlertDialog(
                                     onDismissRequest = { showRebootDialog = false },
                                     icon = {
+                                        DialogSystemBars()
                                         Icon(
                                             imageVector = Icons.Default.RestartAlt,
                                             contentDescription = null,

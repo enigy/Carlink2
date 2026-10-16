@@ -48,10 +48,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
-import androidx.core.view.WindowCompat
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.carlink.ui.components.DialogSystemBars
+import com.carlink.ui.components.applySystemBars
 import com.carlink.ui.theme.AutomotiveDimens
 
 /**
@@ -137,6 +136,8 @@ internal fun DisplayModeDialog(
         window?.let { applyDisplayModePreview(it, savedMode) }
         onDismiss()
     }) {
+        // [230] While this dialog has focus, its window decides the bars: preview there too.
+        DialogSystemBars(mode = selectedMode)
         Surface(
             shape = MaterialTheme.shapes.extraLarge,
             color = colorScheme.surfaceContainerHigh,
@@ -301,46 +302,12 @@ internal fun DisplayModeDialog(
 /**
  * Applies the display mode preview by showing/hiding system bars.
  * Used for instant visual feedback in the DisplayModeDialog.
+ * [230] The dialog's own window follows the same preview (DialogSystemBars in its content).
  */
 private fun applyDisplayModePreview(
     window: android.view.Window,
     mode: DisplayMode,
-) {
-    val controller = WindowCompat.getInsetsController(window, window.decorView)
-
-    when (mode) {
-        DisplayMode.SYSTEM_UI_VISIBLE -> {
-            // Show all system bars - let AAOS manage display bounds.
-            // MINOR QUIRK: systemBarsBehavior is not reset here. If the user
-            // previously previewed a hiding mode, BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            // persists on the controller. Benign since bars are shown, but noted.
-            controller.show(WindowInsetsCompat.Type.systemBars())
-        }
-
-        DisplayMode.STATUS_BAR_HIDDEN -> {
-            // Hide status bar only, keep navigation bar visible
-            controller.hide(WindowInsetsCompat.Type.statusBars())
-            controller.show(WindowInsetsCompat.Type.navigationBars())
-            controller.systemBarsBehavior =
-                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        }
-
-        DisplayMode.NAV_BAR_HIDDEN -> {
-            // Hide navigation bar only, keep status bar visible
-            controller.show(WindowInsetsCompat.Type.statusBars())
-            controller.hide(WindowInsetsCompat.Type.navigationBars())
-            controller.systemBarsBehavior =
-                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        }
-
-        DisplayMode.FULLSCREEN_IMMERSIVE -> {
-            // Hide all system bars for maximum projection area
-            controller.hide(WindowInsetsCompat.Type.systemBars())
-            controller.systemBarsBehavior =
-                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        }
-    }
-}
+) = mode.applySystemBars(window)
 
 /**
  * Display Mode Selection Button

@@ -79,6 +79,7 @@ import com.carlink.CarlinkManager
 import com.carlink.logging.FileLogManager
 import com.carlink.logging.logInfo
 import com.carlink.logging.logWarn
+import com.carlink.ui.components.DialogSystemBars
 import com.carlink.ui.components.FrostedGlassBackground
 import com.carlink.ui.components.LoadingSpinner
 import com.carlink.ui.components.LocalSettingsArrival
@@ -241,7 +242,10 @@ fun SettingsScreen(
                     if (showCloseConfirm) {
                         AlertDialog(
                             onDismissRequest = { showCloseConfirm = false },
-                            title = { Text("Close App?") },
+                            title = {
+                                DialogSystemBars()
+                                Text("Close App?")
+                            },
                             text = { Text("This will stop all connections and close the app.") },
                             confirmButton = {
                                 TextButton(
@@ -554,6 +558,7 @@ private fun ControlTabContent(
         AlertDialog(
             onDismissRequest = { showResetClusterDialog = false },
             icon = {
+                DialogSystemBars()
                 Icon(
                     imageVector = Icons.Default.Speed,
                     contentDescription = null,
@@ -588,6 +593,7 @@ private fun ControlTabContent(
         AlertDialog(
             onDismissRequest = { showClusterNavOffDialog = false },
             icon = {
+                DialogSystemBars()
                 Icon(
                     imageVector = Icons.Default.Speed,
                     contentDescription = null,

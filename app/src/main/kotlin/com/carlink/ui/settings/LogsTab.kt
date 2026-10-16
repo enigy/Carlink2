@@ -78,6 +78,7 @@ import com.carlink.logging.apply
 import com.carlink.logging.logError
 import com.carlink.logging.logInfo
 import com.carlink.logging.logWarn
+import com.carlink.ui.components.DialogSystemBars
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -432,6 +433,7 @@ internal fun LogsTabContent(
         AlertDialog(
             onDismissRequest = { showDebugWarningDialog = false },
             icon = {
+                DialogSystemBars()
                 Icon(
                     imageVector = Icons.Default.Warning,
                     contentDescription = null,
@@ -479,6 +481,7 @@ internal fun LogsTabContent(
         val fileSizeStr = formatFileSize(file.length())
 
         Dialog(onDismissRequest = { showDeleteDialog = null }) {
+            DialogSystemBars()
             Surface(
                 shape = MaterialTheme.shapes.extraLarge,
                 color = colorScheme.surfaceContainerHigh,
@@ -700,6 +703,7 @@ private fun LogLevelSelectorDialog(
         )
 
     Dialog(onDismissRequest = onDismiss) {
+        DialogSystemBars()
         Surface(
             shape = MaterialTheme.shapes.extraLarge,
             color = colorScheme.surfaceContainerHigh,

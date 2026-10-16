@@ -52,6 +52,7 @@ import androidx.compose.ui.unit.dp
 import com.carlink.CarlinkManager
 import com.carlink.R
 import com.carlink.protocol.PhoneType
+import com.carlink.ui.components.DialogSystemBars
 import com.carlink.ui.theme.AutomotiveDimens
 import kotlinx.coroutines.delay
 
@@ -512,7 +513,10 @@ private fun RemoveDeviceDialog(
     AlertDialog(
         // Back press / scrim tap both clear deviceToRemove via onDismiss.
         onDismissRequest = onDismiss,
-        title = { Text("Remove Device") },
+        title = {
+            DialogSystemBars()
+            Text("Remove Device")
+        },
         text = {
             Text(
                 "Remove \"$deviceName\" from the adapter's paired device list? " +

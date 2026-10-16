@@ -75,6 +75,7 @@ import com.carlink.usb.CarlinkBridge
 import com.carlink.ui.components.BridgeNotStartingPanel
 import com.carlink.ui.components.BridgeSetupPanel
 import com.carlink.ui.components.ForestFogEffect
+import com.carlink.ui.components.LoadingStatusView
 import com.carlink.ui.components.LoadingSpinner
 import com.carlink.ui.components.VideoSurface
 import com.carlink.ui.components.rememberVideoSurfaceState
@@ -424,10 +425,11 @@ fun MainScreen(
 
                         Spacer(modifier = Modifier.height(24.dp))
 
-                        Text(
-                            text = "[ $statusText ]",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = Color(0xFFDDE4E5), // Fixed light color for dark overlay
+                        // [229] Three steps in ethereal words, in place of the raw status text.
+                        LoadingStatusView(
+                            statusText = statusText,
+                            phoneConnected = connectionState == CarlinkManager.State.DEVICE_CONNECTED,
+                            androidAuto = isAndroidAuto,
                         )
                     }
                 }

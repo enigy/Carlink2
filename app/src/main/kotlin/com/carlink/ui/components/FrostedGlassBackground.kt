@@ -11,12 +11,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.BlurredEdgeTreatment
-import androidx.compose.ui.draw.blur
+import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.ImageShader
 import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
@@ -46,25 +47,36 @@ private const val GRAIN_SEED = 220L
  * ([BackgroundLogoConfig.drawableRes], so it follows the Background Logo setting), blurred,
  * tinted and grained.
  *
- * Opaque by construction — the scene fills the bounds and [BlurredEdgeTreatment.Rectangle]
- * keeps the blurred edges solid — so the projection's SurfaceView never shows through it.
- * The scene is a static image (no fog animation), so the blurred layer is drawn once and reused.
+ * Opaque by construction once in place — the scene fills the bounds and the blur clamps at the
+ * edges (as [BlurredEdgeTreatment.Rectangle] does) — so the projection's SurfaceView never shows
+ * through it. The scene is a static image (no fog animation), so the blurred layer is drawn once
+ * and reused.
+ *
+ * [229] [progress] is the settings page's arrival ([SettingsFlyIn]): the glass fades in over the
+ * CarPlay screen while its frost thickens. Read in the layer phase, so the animation redraws the
+ * layer without recomposing.
  */
 @Composable
 fun FrostedGlassBackground(
     backgroundLogo: BackgroundLogoConfig,
     modifier: Modifier = Modifier,
+    progress: () -> Float = { 1f },
 ) {
     val blurSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
     val tint = MaterialTheme.colorScheme.surface.copy(alpha = if (blurSupported) GLASS_TINT_ALPHA else GLASS_TINT_ALPHA_NO_BLUR)
     val grain = remember { ShaderBrush(ImageShader(grainTile(), TileMode.Repeated, TileMode.Repeated)) }
 
-    Box(modifier = modifier.fillMaxSize()) {
+    Box(modifier = modifier.fillMaxSize().graphicsLayer { alpha = SettingsFlyIn.glassAlpha(progress()) }) {
         Image(
             painter = painterResource(id = backgroundLogo.drawableRes),
             contentDescription = null,
             contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize().blur(GLASS_BLUR_RADIUS, BlurredEdgeTreatment.Rectangle),
+            modifier =
+                Modifier.fillMaxSize().graphicsLayer {
+                    val radius = SettingsFlyIn.glassBlurDp(progress(), GLASS_BLUR_RADIUS.value).dp.toPx()
+                    renderEffect = BlurEffect(radius, radius, TileMode.Clamp)
+                    clip = true
+                },
         )
         Box(modifier = Modifier.fillMaxSize().background(tint))
         Box(modifier = Modifier.fillMaxSize().background(grain))

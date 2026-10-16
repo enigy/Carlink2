@@ -30,14 +30,17 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.EnterExitState
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -68,6 +71,8 @@ import com.carlink.protocol.KnownDevices
 import com.carlink.ui.MainScreen
 import com.carlink.ui.BridgeSetupNotification
 import com.carlink.ui.SettingsScreen
+import com.carlink.ui.components.LocalSettingsArrival
+import com.carlink.ui.components.SettingsFlyIn
 import com.carlink.ui.settings.AdapterConfigPreference
 import com.carlink.ui.settings.DisplayMode
 import com.carlink.ui.settings.DisplayModePreference
@@ -1650,23 +1655,44 @@ fun CarlinkApp(
             onOpenFiles = onOpenFiles,
         )
 
-        // SettingsScreen slides in ON TOP of MainScreen
+        // SettingsScreen arrives ON TOP of MainScreen
         // MainScreen remains visible underneath (just covered)
+        // [229] One arrival value drives the page's motion (SettingsFlyIn): its glass fades in and
+        // frosts over the CarPlay screen, its content flies in from behind the driver.
+        // AnimatedVisibility keeps the page composed until this animation finishes on the way out.
         AnimatedVisibility(
             visible = showSettings,
-            enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
-            exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut(),
+            enter = EnterTransition.None,
+            exit = ExitTransition.None,
         ) {
-            SettingsScreen(
-                carlinkManager = carlinkManager,
-                fileLogManager = fileLogManager,
-                onNavigateBack = {
-                    logInfo("[UI_NAV] Closing SettingsScreen overlay", tag = "UI")
-                    showSettings = false
-                },
-                onResetCluster = onResetCluster,
-                onReinitForDisplayMode = onReinitForDisplayMode,
-            )
+            val arrivalState =
+                transition.animateFloat(
+                    transitionSpec = {
+                        if (targetState == EnterExitState.Visible) {
+                            tween(SettingsFlyIn.ENTER_MS, easing = EmphasizedDecelerate)
+                        } else {
+                            tween(SettingsFlyIn.EXIT_MS, easing = EmphasizedAccelerate)
+                        }
+                    },
+                    label = "settingsArrival",
+                ) { state -> if (state == EnterExitState.Visible) 1f else 0f }
+            val arrival = remember(arrivalState) { { arrivalState.value } }
+            CompositionLocalProvider(LocalSettingsArrival provides arrival) {
+                SettingsScreen(
+                    carlinkManager = carlinkManager,
+                    fileLogManager = fileLogManager,
+                    onNavigateBack = {
+                        logInfo("[UI_NAV] Closing SettingsScreen overlay", tag = "UI")
+                        showSettings = false
+                    },
+                    onResetCluster = onResetCluster,
+                    onReinitForDisplayMode = onReinitForDisplayMode,
+                )
+            }
         }
     }
 }
+
+// [229] Material 3's emphasized curves: the page lands softly, and leaves with a push.
+private val EmphasizedDecelerate = CubicBezierEasing(0.05f, 0.7f, 0.1f, 1f)
+private val EmphasizedAccelerate = CubicBezierEasing(0.3f, 0f, 0.8f, 0.15f)

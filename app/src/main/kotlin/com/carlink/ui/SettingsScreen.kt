@@ -81,6 +81,8 @@ import com.carlink.logging.logInfo
 import com.carlink.logging.logWarn
 import com.carlink.ui.components.FrostedGlassBackground
 import com.carlink.ui.components.LoadingSpinner
+import com.carlink.ui.components.LocalSettingsArrival
+import com.carlink.ui.components.settingsFlyIn
 import com.carlink.ui.settings.AdapterConfigPreference
 import com.carlink.ui.settings.AdapterConfigurationDialog
 import com.carlink.ui.settings.DisplayMode
@@ -148,12 +150,15 @@ fun SettingsScreen(
         color = Color.Transparent,
         contentColor = colorScheme.onSurface,
     ) {
-        FrostedGlassBackground(backgroundLogo = backgroundLogo)
+        // [229] The glass frosts over the CarPlay screen as the page flies in from behind the driver.
+        val arrival = LocalSettingsArrival.current
+        FrostedGlassBackground(backgroundLogo = backgroundLogo, progress = arrival)
 
         Row(
             modifier =
                 Modifier
                     .fillMaxSize()
+                    .settingsFlyIn(arrival)
                     .windowInsetsPadding(WindowInsets.safeDrawing),
         ) {
             // Left sidebar with NavigationRail

@@ -36,6 +36,7 @@ import com.carlink.platform.AudioConfig
 import com.carlink.platform.PlatformDetector
 import com.carlink.protocol.AdapterConfig
 import com.carlink.protocol.AdapterDriver
+import com.carlink.protocol.AdapterIdentityState
 import com.carlink.protocol.AudioCommand
 import com.carlink.protocol.AudioDataMessage
 import com.carlink.protocol.BluetoothPairedListMessage
@@ -337,6 +338,13 @@ class CarlinkManager(
         // 0x17 MultiTouch and do not consult this constant. 2026-04-20 UI_TOUCH traces
         // (2 CarPlay sessions, ~100min) show pointers=1 on every event; zero multi-touch.
         private const val AA_TOUCH_THROTTLE_NS = 17_000_000L
+
+        // [232] Tap-latency diagnostic. After a touch DOWN, every inbound video frame is
+        // logged ([TAP_DIAG]) for this long, so a CarPlay home/app-grid press can be matched
+        // to the phone's video response: a gap in frames means the phone was slow to react;
+        // frames still flowing means the stall is head-unit/display-side. Diagnostic only —
+        // no behavior change, and the window is armed on DOWN, not re-armed on MOVE.
+        private const val TAP_DIAG_WINDOW_NS = 3_000_000_000L
 
         // ---------------------------------------------------------------------------------
         // Reconnect-escalation patterns (in-source conventions)
@@ -2145,6 +2153,15 @@ class CarlinkManager(
     // rate limit).
     @Volatile private var lastAaTouchSendTimeNs = 0L
 
+    // [232] Tap-latency diagnostic window (see [TAP_DIAG_WINDOW_NS]). Armed by sendMultiTouch
+    // on a DOWN; read and advanced by processVideoDirect on the USB read thread. One thread
+    // increments the frame count within an open window, so @Volatile (not Atomic) is enough;
+    // a DOWN landing mid-window simply restarts it, which is fine for a diagnostic.
+    @Volatile private var tapDiagUntilNs = 0L
+    @Volatile private var tapDiagStartNs = 0L
+    @Volatile private var tapDiagLastFrameNs = 0L
+    @Volatile private var tapDiagFrameCount = 0
+
     /**
      * Send a multi-touch event (CarPlay) or single-touch event (Android Auto).
      * AA uses type 0x05 with 0..10000 ints; CarPlay uses type 0x17 with 0..1 floats.
@@ -2157,6 +2174,24 @@ class CarlinkManager(
     fun sendMultiTouch(touches: List<MessageSerializer.TouchPoint>) {
         val driver = adapterDriver ?: return
         val isAA = currentPhoneType == PhoneType.ANDROID_AUTO
+        // [232] Tap-latency diagnostic: log DOWN/UP and arm the per-frame video log on DOWN.
+        // Timestamped here, at the input moment, before the send hops to Dispatchers.IO.
+        touches.firstOrNull()?.let { primary ->
+            if (primary.action != MultiTouchAction.MOVE) {
+                val nowNs = System.nanoTime()
+                if (primary.action == MultiTouchAction.DOWN) {
+                    tapDiagStartNs = nowNs
+                    tapDiagLastFrameNs = 0L
+                    tapDiagFrameCount = 0
+                    tapDiagUntilNs = nowNs + TAP_DIAG_WINDOW_NS
+                }
+                logInfo(
+                    "[TAP_DIAG] ${primary.action} x=${"%.4f".format(primary.x)} y=${"%.4f".format(primary.y)} " +
+                        "pointers=${touches.size} ${if (isAA) "AA" else "CarPlay"}",
+                    tag = Logger.Tags.ADAPTR,
+                )
+            }
+        }
         scope.launch(Dispatchers.IO) {
             if (isAA && touches.isNotEmpty()) {
                 // AA: send primary pointer as single-touch (type 0x05, 0..10000 ints)
@@ -2190,6 +2225,36 @@ class CarlinkManager(
             } else {
                 driver.sendMultiTouch(touches)
             }
+        }
+    }
+
+    /**
+     * [232] Tap-latency diagnostic: while the window armed by a touch DOWN is still open, log
+     * each inbound frame's arrival relative to the tap plus the gap since the previous frame,
+     * then a one-line summary when the window closes. A gap after the press points at the phone
+     * (slow to react); frames still flowing points at the head unit/display. Called per frame on
+     * the USB read thread; `logInfo` only enqueues (1 Hz async file flush), so it does not stall
+     * frame intake, and it is a no-op whenever no window is armed.
+     */
+    private fun logTapDiagnosticsFrame(dataLength: Int) {
+        val tapUntil = tapDiagUntilNs
+        if (tapUntil == 0L) return
+        val nowNs = System.nanoTime()
+        if (nowNs <= tapUntil) {
+            val sinceTapMs = (nowNs - tapDiagStartNs) / 1_000_000L
+            val gapMs = if (tapDiagLastFrameNs == 0L) 0L else (nowNs - tapDiagLastFrameNs) / 1_000_000L
+            tapDiagLastFrameNs = nowNs
+            logInfo(
+                "[TAP_DIAG] +${sinceTapMs}ms frame#${++tapDiagFrameCount} len=$dataLength gap=${gapMs}ms",
+                tag = Logger.Tags.ADAPTR,
+            )
+        } else {
+            tapDiagUntilNs = 0L
+            logInfo(
+                "[TAP_DIAG] window closed: $tapDiagFrameCount frames in " +
+                    "${TAP_DIAG_WINDOW_NS / 1_000_000L}ms after tap",
+                tag = Logger.Tags.ADAPTR,
+            )
         }
     }
 
@@ -3292,6 +3357,21 @@ class CarlinkManager(
 
             is InfoMessage -> {
                 logDebug("[INFO] ${message.label}: ${message.value}", tag = Logger.Tags.ADAPTR)
+                if (message.label == "SoftwareVersion" && message.value.isNotBlank()) {
+                    AdapterIdentityState.recordFirmwareVersion(message.value)
+                    val ok = AdapterIdentityState.matches(message.value)
+                    logInfo(
+                        "[FW_CHECK] adapter firmware=${message.value} " +
+                            "expected=${AdapterIdentityState.EXPECTED_FIRMWARE_BASE}* match=$ok" +
+                            if (ok) {
+                                ""
+                            } else {
+                                " — app built/verified against ${AdapterIdentityState.EXPECTED_FIRMWARE_BASE};" +
+                                    " protocol handling and bundled patches may not apply"
+                            },
+                        tag = Logger.Tags.ADAPTR,
+                    )
+                }
             }
 
             is UnknownMessage -> {
@@ -4600,6 +4680,9 @@ class CarlinkManager(
                 if (codecDeferred) {
                     startCodecIfDeferred()
                 }
+
+                // [232] Tap-latency diagnostic (no-op unless a touch DOWN armed the window).
+                logTapDiagnosticsFrame(dataLength)
 
                 if (++videoFrameCount % 30 == 0L) {
                     logVideoUsb { "processVideoDirect: frame=$videoFrameCount dataLength=$dataLength, pts=$sourcePtsMs" }

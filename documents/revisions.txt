@@ -1966,6 +1966,28 @@
      app/build.gradle.kts.
    - Released with [231] (not built on its own for Play).
 
+[232] :: Tap-latency diagnostic ([TAP_DIAG]) + adapter firmware-version check ([FW_CHECK], Settings line).
+   - WHY: a few builds back the full-screen CarPlay view ↔ app-grid transition started stuttering and taking
+     2-3 s to appear after the lower-left app button is pressed. The Oct 16 drive log (build 227) shows frame
+     DELIVERY was healthy (p99 72 ms, no drops), and the touch send path is unchanged since March, so the logs
+     we have can't localize it: they record neither the tap nor per-frame timing right after it.
+   - TAP_DIAG: CarlinkManager.sendMultiTouch logs every DOWN/UP (normalized x/y, pointer count, CarPlay/AA) and,
+     on a DOWN, arms a 3 s window; processVideoDirect then logs each inbound frame as "+<ms since tap> frame#N
+     len=<bytes> gap=<ms since previous>", then a "window closed: N frames" summary. A gap after the press means
+     the phone was slow to respond (CPU/animation); frames still flowing at ~30-60 fps means the stall is
+     head-unit/display-side. INFO level under the ADAPTR tag so it survives release log filtering; window is armed
+     on DOWN only (never re-armed on MOVE), so it fires once per tap, not on drags.
+   - FW_CHECK: the adapter's SoftwareVersion (0xCC) is recorded into AdapterIdentityState and compared to the
+     version this build targets (2025.10.15.1127). Logged once per connect and shown in Settings under the app
+     version ("Adapter firmware: …", tertiary + an "Expected …" line on mismatch). NOTE: this verifies the
+     firmware VERSION, not stock-vs-custom — the CPC200-CCPA custom image is built from the same base version and
+     announces the same string over USB, so projection can't tell them apart (the custom tells, Dropbear/SFTP,
+     live on the adapter's own IP). The user flashed the custom firmware; this flags only an unexpected version,
+     which is what would silently break the bundled binary patches and protocol assumptions.
+   - Diagnostic/observability only; no projection, audio, or touch behavior changes.
+   - Compiled here; unit tests pass. Not run on hardware. Built as an upload-key-signed sideload, not for Play.
+   - Affected: protocol/AdapterIdentityState.kt (new), CarlinkManager.kt, ui/SettingsScreen.kt, app/build.gradle.kts.
+
 [231] :: Revert upstream [160]'s CarPlay night-mode forwarding; CarPlay picks its own day/night appearance again.
    - Upstream [160] (merged in [220]) sent ENABLE_NIGHT_MODE / DISABLE_NIGHT_MODE to the phone from AAOS's
      isSystemInDarkTheme(): when a session reached STREAMING and on every system theme change. Removed at the

@@ -79,6 +79,7 @@ import com.carlink.CarlinkManager
 import com.carlink.logging.FileLogManager
 import com.carlink.logging.logInfo
 import com.carlink.logging.logWarn
+import com.carlink.protocol.AdapterIdentityState
 import com.carlink.ui.components.DialogSystemBars
 import com.carlink.ui.components.FrostedGlassBackground
 import com.carlink.ui.components.LoadingSpinner
@@ -289,6 +290,11 @@ fun SettingsScreen(
                             ),
                         color = if (appVersion.isEmpty()) colorScheme.onSurfaceVariant else colorScheme.onSurface,
                     )
+
+                    // [232] Adapter firmware version the box reported over USB (null until it
+                    // answers). See [AdapterFirmwareLine].
+                    Spacer(modifier = Modifier.height(8.dp))
+                    AdapterFirmwareLine()
                 }
             }
 
@@ -334,6 +340,41 @@ private enum class ButtonSeverity {
  *      it — the other 3 buttons gate on it but never raise it themselves (UX: spinner appears
  *      on all of them when Reset Connection runs; no per-action progress indicator).
  */
+/**
+ * [232] One or two lines under the app version: the firmware the adapter reported over USB,
+ * neutral until it answers, and tinted with an "Expected …" line when it is not the version
+ * this build targets. This checks the firmware VERSION, not stock-vs-custom — see
+ * [AdapterIdentityState]. Collects the process-global flow so it updates live on connect.
+ */
+@Composable
+private fun AdapterFirmwareLine() {
+    val colorScheme = MaterialTheme.colorScheme
+    val adapterFirmware by AdapterIdentityState.firmwareVersion.collectAsStateWithLifecycle()
+    val firmwareOk = AdapterIdentityState.matches(adapterFirmware)
+    Text(
+        text = "Adapter firmware:",
+        style = MaterialTheme.typography.bodySmall,
+        color = colorScheme.onSurfaceVariant,
+    )
+    Text(
+        text = adapterFirmware ?: "- - -",
+        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+        color =
+            when {
+                adapterFirmware == null -> colorScheme.onSurfaceVariant
+                firmwareOk -> colorScheme.onSurface
+                else -> colorScheme.tertiary
+            },
+    )
+    if (adapterFirmware != null && !firmwareOk) {
+        Text(
+            text = "Expected ${AdapterIdentityState.EXPECTED_FIRMWARE_BASE}",
+            style = MaterialTheme.typography.bodySmall,
+            color = colorScheme.tertiary,
+        )
+    }
+}
+
 @Composable
 private fun ControlTabContent(
     carlinkManager: CarlinkManager,

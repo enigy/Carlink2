@@ -47,24 +47,64 @@ about the setup. **This choice drives everything downstream, so it's the first t
 - Fully open box userspace: SSH, logs over `CH_LOG`, no closed `riddleBox` to reverse.
 
 **Lose / regress (read this before committing)**
-- **Cluster turn-by-turn and the HUD maneuver icons.** This is the big one, and it's exactly the
-  work we've been investing in (the `[203]` junction icons, `[207]`/`[213]` HUD fixes, and the
-  `[236]` exit-number reader). Carlink2 drives those through AAOS **Templates Host /
-  NavigationManager** and the cluster display. OCBM's own notes
-  (`docs/ops/04_OPEN_ITEMS.md`, `01_ANDROID_AND_AAOS.md`) record that a third-party app **cannot**
-  use `CarProjectionManager`, `CAR_NAVIGATION_MANAGER` cluster TBT, or `ClusterHomeManager` — they're
-  `signature|privileged` on a locked GM unit. `CarlinkAndroid` therefore has **no cluster/HUD nav
-  path** and isn't planning one. Net: you'd likely trade richer CarPlay video for losing nav on the
-  gauge cluster. If the cluster HUD is a must-keep, that alone may decide against the switch.
+- ~~Cluster turn-by-turn and the HUD maneuver icons.~~ **Corrected 2026-10-17 — portable, see
+  "Cluster nav on OCBM" below.** The first draft took OCBM's "cluster TBT is out of reach for a
+  third-party app" at face value. That finding is about the system APIs (`CarProjectionManager`,
+  `CAR_NAVIGATION_MANAGER`, `ClusterHomeManager`), which OCBM evaluated and rightly rejected.
+  Carlink2 doesn't use any of them: it reaches the cluster through the public **androidx.car.app
+  Templates Host** (a `CarAppService` in the NAVIGATION + FEATURE_CLUSTER categories, with the two
+  *normal* permissions `NAVIGATION_TEMPLATES` and `ACCESS_SURFACE`), and it works today as an
+  unprivileged sideload on this exact truck. OCBM never evaluated that route (no mention anywhere in
+  its tree). So cluster nav is a **port**, not a loss.
 - **The Adapter Configuration dialog.** Audio source, mic source, media/echo delay, resolution, FPS,
   drive side, GPS forwarding, Wi-Fi band — all stock `BoxSettings` knobs with no OCBM equivalent;
   OCBM pushes a `VehicleConfig` YAML and hardcodes much of the rest.
-- **ExitInfo / call-audio work in flight.** The `[236]` ExitInfo reader and the `[235]`/PR #18 call
-  path are stock-protocol changes; they don't carry over. ExitInfo would instead be a one-line
-  selector in OCBM's Rust subscribe (the clean version of what we asked lvalen91 for) — but only if
-  OCBM surfaces nav to the app at all, which per the cluster limitation above it largely doesn't.
+- **Call-audio work in flight.** The `[235]`/PR #18 call path is a stock-protocol change and
+  doesn't carry over. (ExitInfo is the opposite — OCBM already decodes it; see below.)
 - **The Logs tab** (file sink + level switch). CarlinkAndroid is `adb logcat` only today.
 - **Reset Cluster** — no cluster in that build.
+
+## Cluster nav on OCBM — how (added 2026-10-17)
+
+**The data already reaches the OCBM app.** The box's iAP2 stack decodes route guidance to JSON and
+forwards it on `CH_METADATA` as `META_JSON` records (`iap2-core/src/metadata.rs`):
+
+| iAP2 msg | JSON `kind` | Fields emitted today |
+|---|---|---|
+| 0x5201 RouteGuidanceUpdate | `routeGuidance` | routeGuidanceState, maneuverState, currentRoadName, destinationName, etaEpoch, timeRemainingSec, distanceRemainingM, distanceToManeuverM (+text/units), **currentManeuverIndex**, maneuverTotalCount |
+| 0x5202 ManeuverInformation | `maneuver` | index, description, **maneuverType**, afterManeuverRoadName, distanceM (+text/units), drivingSide, junctionType, **exitInfo** |
+| 0x5204 LaneGuidance | (one record per lane) | lane status / angle |
+
+`CarlinkAndroid`'s `CarlinkManager.onMetadata` consumes `routeGuidance` only to claim nav focus and
+drops `maneuver` into `else -> Unit`. Everything a cluster trip needs is on the wire; nothing reads it.
+
+**What ports from Carlink2 (~5,700 lines, mostly transport-agnostic):**
+- Keep as-is: `cluster/` (`CarlinkClusterService`, `ClusterMainSession`, `CarlinkClusterSession`,
+  `ClusterBindingState`), `navigation/TripBuilder`, `ManeuverMapper`, `DistanceFormatter`,
+  `ManeuverIconRenderer`, and the whole `navigation/compose/` icon composer.
+- Rewrite one seam: `NavigationStateManager.onNaviJson` reads stock NaviJSON keys. Replace with a
+  mapper from OCBM's `routeGuidance`/`maneuver` JSON into `NavigationState`. Keep maneuvers in a
+  map by `index`; `currentManeuverIndex` from 0x5201 selects the live one (OCBM's own note calls this
+  out as the fix for the stale-first-maneuver bug).
+- Drop: `Iap2RouteParser`/`Iap2StateParser` (raw TLV parsers) — OCBM already decodes the TLVs.
+  Keep `Iap2ManeuverData` as the model.
+- Relocate one piece: the cluster icon `ContentProvider` (authority
+  `…templates.host.ClusterIconContentProvider`) lives in Carlink2's **bridge APK**
+  (`bridge/…/ClusterIconProvider.kt`, one file). The OCBM app claims USB itself and has no bridge, so
+  host that provider in the app. Carlink2's manifest notes the Templates Host resolves that authority
+  by package; verify on the truck that an in-app provider is accepted the same way.
+
+**Two gaps, both small, both on the Rust side (OCBM PRs to lvalen91):**
+1. `maneuver()` does not emit params 10/11 (JunctionElementAngle, multi-occurrence; JunctionElementExitAngle).
+   Carlink2's `[203]` real-geometry roundabout/junction icons need them. Without them,
+   `ManeuverMapper` falls back to static glyphs by `maneuverType` — cluster nav still works, just the
+   pre-`[203]` look. Adding the two ids is a few lines.
+2. `start_route_guidance()` sends selectors 0/1/2 only; **ExitInfo needs selector 3** — one line.
+   OCBM already decodes param 13 into `exitInfo`, so this is the clean version of the whole v5-binary
+   question: no packed binary, no renumbering trick.
+
+**Net:** on OCBM the cluster/HUD keeps everything it has today, and gains exit numbers and lane
+guidance that the stock box never forwards. This removes the plan's make-or-break objection.
 
 ## Authorization note
 
@@ -96,7 +136,8 @@ ordering.
 
 ## Open questions to resolve before phase 3
 
-- **Cluster/HUD nav**: is losing it acceptable? (Likely the make-or-break question.)
+- **Cluster/HUD nav**: resolved — portable (see above). Remaining question is only sequencing: port
+  it before the first in-truck test, or accept a short window without it.
 - **One adapter or two?** Flashing your only adapter means your daily CarPlay rides on the trial
   until it's stable. A second CPC200-CCPA to experiment on removes all schedule pressure.
 - **Who owns the app?** Run lvalen91's CarlinkAndroid as-is, or fork it the way Carlink2 forked
@@ -108,6 +149,6 @@ ordering.
 
 Before any flashing: get a **second adapter** to use as the OCBM bench unit, and settle the
 architecture question. Then do phases 1–2 only (read + full backup + prove recovery). That's
-all-upside and commits nothing. Hold the cluster-nav trade-off up against how much you rely on the
-HUD today — that's the decision most likely to stop this, and it's better faced first than at
-phase 6.
+all-upside and commits nothing. With cluster nav shown to be portable, the remaining real
+risks are the USB-permission prompt behavior on the GM unit and the loss of the Adapter
+Configuration knobs — both worth confirming on a bench adapter before the truck.

@@ -461,17 +461,17 @@ fun AdapterConfigurationDialog(
                                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                                     ) {
                                         AudioSourceButton(
-                                            label = "Car voice",
-                                            icon = Icons.Default.DirectionsCar,
-                                            isSelected = selectedCallMic == CallMicConfig.VOICE_UPLINK,
-                                            onClick = { selectedCallMic = CallMicConfig.VOICE_UPLINK },
+                                            label = "Automatic",
+                                            icon = Icons.Default.Mic,
+                                            isSelected = selectedCallMic == CallMicConfig.AUTOMATIC,
+                                            onClick = { selectedCallMic = CallMicConfig.AUTOMATIC },
                                             modifier = Modifier.weight(1f),
                                         )
                                         AudioSourceButton(
-                                            label = "Built-in",
-                                            icon = Icons.Default.Mic,
-                                            isSelected = selectedCallMic == CallMicConfig.BUILT_IN,
-                                            onClick = { selectedCallMic = CallMicConfig.BUILT_IN },
+                                            label = "Car call path",
+                                            icon = Icons.Default.DirectionsCar,
+                                            isSelected = selectedCallMic == CallMicConfig.VOICE_UPLINK,
+                                            onClick = { selectedCallMic = CallMicConfig.VOICE_UPLINK },
                                             modifier = Modifier.weight(1f),
                                         )
                                     }
@@ -479,9 +479,10 @@ fun AdapterConfigurationDialog(
                                     Text(
                                         text =
                                             when (selectedCallMic) {
+                                                CallMicConfig.AUTOMATIC ->
+                                                    "The car and Android pick the mic and echo cancelling (default)"
                                                 CallMicConfig.VOICE_UPLINK ->
-                                                    "The car's call mic (Voice_Uplink), echo-cancelled by the car (recommended)"
-                                                CallMicConfig.BUILT_IN -> "Built-in mic with Android echo cancelling (before v225)"
+                                                    "Forces the car's call uplink (Voice_Uplink). Try it if callers hear echo"
                                             },
                                         style = MaterialTheme.typography.bodySmall,
                                         color = colorScheme.primary,
@@ -600,7 +601,7 @@ fun AdapterConfigurationDialog(
                                 ) {
                                     EchoDelayConfig.entries.forEach { option ->
                                         AudioSourceButton(
-                                            label = if (option == EchoDelayConfig.ADAPTER) "Adapter" else "${option.delayMs}",
+                                            label = if (option == EchoDelayConfig.NOT_SENT) "Adapter" else "${option.delayMs}",
                                             icon = Icons.Default.PhoneInTalk,
                                             isSelected = selectedEchoDelay == option,
                                             onClick = { selectedEchoDelay = option },
@@ -613,9 +614,9 @@ fun AdapterConfigurationDialog(
                                 Text(
                                     text =
                                         when (selectedEchoDelay) {
-                                            EchoDelayConfig.ADAPTER -> "Firmware default — cancels echo $echoFrom–320ms late"
-                                            EchoDelayConfig.DEFAULT ->
-                                                "Cancels echo $echoFrom–${selectedEchoDelay.delayMs}ms late (recommended for GM)"
+                                            EchoDelayConfig.NOT_SENT ->
+                                                "Not sent — the adapter keeps its own setting (its web page; 320 unless changed)"
+                                            EchoDelayConfig.MS_320 -> "Firmware default — cancels echo $echoFrom–320ms late"
                                             else -> "Cancels echo $echoFrom–${selectedEchoDelay.delayMs}ms late"
                                         },
                                     style = MaterialTheme.typography.bodySmall,

@@ -1351,7 +1351,7 @@ class CarlinkManager(
                         WiFiBandConfig.BAND_24GHZ -> "24ghz"
                     },
                 callQuality = userConfig.callQuality.value,
-                echoDelay = userConfig.echoDelay.delayMs,
+                echoDelay = userConfig.echoDelay.sentMs,
                 fps = userConfig.fps.fps,
                 handDriveMode = userConfig.handDrive.value,
                 gpsForwarding = userConfig.gpsForwarding,
@@ -3661,6 +3661,7 @@ class CarlinkManager(
             currentMicDecodeType = decodeType
             currentMicAudioType = audioType
             currentMicInputId = input?.id
+            if (activeVoiceMode == VoiceMode.PHONECALL) logCallAudio(input)
 
             // Start send loop
             // HAZARD: java.util.Timer.scheduleAtFixedRate silently terminates the Timer if
@@ -3691,13 +3692,31 @@ class CarlinkManager(
 
     /**
      * [225] The input a phone call records from: GM's Voice_Uplink bus (the car's processed call
-     * mic, what GM's own CarPlay uses) when the car lists it and Settings → Call Mic is "Car voice";
-     * otherwise null = the built-in mic with Android's effects. Siri keeps the built-in mic.
+     * mic, what GM's own CarPlay uses) when the car lists it and Settings → Call Mic is "Car call
+     * path"; otherwise null = no input named, Android's effects attached, the OS/HAL choose ([235]
+     * "Automatic", the default). Siri always takes the null path.
      */
     private fun callMicInput(): AudioDeviceInfo? {
         if (activeVoiceMode != VoiceMode.PHONECALL) return null
         if (AdapterConfigPreference.getInstance(context).getCallMicSync() != CallMicConfig.VOICE_UPLINK) return null
         return platformAudioManager?.let { AudioRouteInfo.uplinkBus(it) }
+    }
+
+    /**
+     * [235] One line per call naming the call audio setup, so logs from different trucks can be
+     * compared by OS build: the Call Mic choice, the input forced (if any), whether the car lists
+     * Voice_Uplink, and the echoDelay sent. The [MIC] lines that follow name the routed device and
+     * the effects attached.
+     */
+    private fun logCallAudio(input: AudioDeviceInfo?) {
+        val pref = AdapterConfigPreference.getInstance(context).getCallMicSync()
+        val listsUplink = platformAudioManager?.let { AudioRouteInfo.uplinkBus(it) } != null
+        logInfo(
+            "[CALL_AUDIO] callMic=$pref input=${input?.let { AudioRouteInfo.device(it) } ?: "OS choice + app AEC/NS/AGC"} " +
+                "carListsVoiceUplink=$listsUplink echoDelay=${config.echoDelay?.let { "${it}ms" } ?: "adapter's own"} " +
+                "os=${android.os.Build.DISPLAY}",
+            tag = Logger.Tags.MIC,
+        )
     }
 
     private fun stopMicrophoneCapture() {
@@ -3739,11 +3758,12 @@ class CarlinkManager(
                 log = { logInfo(it, tag = Logger.Tags.MIC) },
                 adapterEchoDelayMs = config.echoDelay,
             )
-        val window = CallEchoMonitor.adapterWindow(config.echoDelay)
-        logInfo(
-            "[ECHO_MON] started (${rate}Hz), adapter echoDelay=${config.echoDelay} covers ${window.first}-${window.last}ms",
-            tag = Logger.Tags.MIC,
-        )
+        val echoText =
+            config.echoDelay?.let {
+                val window = CallEchoMonitor.adapterWindow(it)
+                "adapter echoDelay=$it covers ${window.first}-${window.last}ms"
+            } ?: "adapter echoDelay not sent (adapter's own setting)"
+        logInfo("[ECHO_MON] started (${rate}Hz), $echoText", tag = Logger.Tags.MIC)
     }
 
     private fun stopEchoMonitor() {

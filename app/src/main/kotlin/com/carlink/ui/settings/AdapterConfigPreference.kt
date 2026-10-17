@@ -168,20 +168,29 @@ enum class MediaDelayConfig(
 /**
  * [224] Echo delay sent to the adapter as `echoDelay` (its EchoLatency setting) in BoxSettings.
  * The adapter's echo canceller only looks at echo arriving between (value − 200) and value ms
- * after it sent the audio; 320 is its own default (120–320 ms). On GM the echo comes back
- * ~640 ms later ([223] logs), so the default can't cancel it.
+ * after it sent the audio; 320 is its own default (120–320 ms). On the driver's GM truck the echo
+ * came back ~640 ms later ([223] logs), so 320 couldn't cancel it there.
+ *
+ * [235] NOT_SENT (the default) sends nothing, so the adapter keeps its own saved value (320
+ * unless set on its web page, or whatever an earlier app build sent). Audio paths differ by GM OS
+ * build and audio calibration, so the app no longer forces one; the ms values are overrides.
+ * Persisted by [delayMs]; 0 = not sent.
  */
 enum class EchoDelayConfig(
     val delayMs: Int,
 ) {
-    ADAPTER(320),
+    NOT_SENT(0),
+    MS_320(320),
     MS_640(640),
     MS_740(740),
     MS_840(840),
     ;
 
+    /** The echoDelay to put in BoxSettings, or null to leave the adapter's own setting alone. */
+    val sentMs: Int? get() = delayMs.takeIf { it > 0 }
+
     companion object {
-        val DEFAULT = MS_740
+        val DEFAULT = NOT_SENT
     }
 }
 
@@ -250,20 +259,31 @@ enum class BackgroundLogoConfig(
 /**
  * [225] Which input a phone call records from. App-only: the adapter never sees it.
  * VOICE_UPLINK is GM's processed call uplink (the Voice_Uplink bus GM's own CarPlay records),
- * echo-cancelled and leveled by the car; used when the car lists it, else the built-in mic.
- * BUILT_IN is the pre-[225] path: the built-in mic with Android's AEC/NS/AGC attached.
+ * echo-cancelled and leveled by the car; used when the car lists it, else the AUTOMATIC path.
+ * [235] AUTOMATIC (was BUILT_IN) is now the default: audio routing differs by GM OS build and
+ * calibration (upstream PR #18 review), so the app only forces Voice_Uplink when the user picks it.
  */
 enum class CallMicConfig(
     val code: String,
 ) {
+    /**
+     * [235] Name no input: VOICE_COMMUNICATION with Android's AEC/NS/AGC attached, and the OS/HAL
+     * pick the device and processing (upstream's behavior; the pre-[225] "Built-in"). On some GM
+     * builds this already lands on the car's Voice_Uplink path with its call echo canceller
+     * (upstream bench log, OS Y181B: IN_BUILTIN_MIC → HAL pathName=Voice_Uplink, ECNR PhoneCall_Uplink).
+     */
+    AUTOMATIC("automatic"),
+
+    /** Force GM's Voice_Uplink bus input, no app effects: for builds where AUTOMATIC echoes. */
     VOICE_UPLINK("voice_uplink"),
-    BUILT_IN("built_in"),
     ;
 
     companion object {
-        val DEFAULT = VOICE_UPLINK
+        val DEFAULT = AUTOMATIC
 
-        fun fromCode(code: String?): CallMicConfig = entries.find { it.code == code } ?: DEFAULT
+        /** "built_in" (pre-[235]) is the same path as AUTOMATIC. */
+        fun fromCode(code: String?): CallMicConfig =
+            if (code == "built_in") AUTOMATIC else entries.find { it.code == code } ?: DEFAULT
     }
 }
 
@@ -426,7 +446,7 @@ class AdapterConfigPreference private constructor(
         // Background logo: stored as BackgroundLogoConfig.code ("gmc", "chevrolet")
         private val KEY_BACKGROUND_LOGO = stringPreferencesKey("background_logo")
 
-        // Call mic input: stored as CallMicConfig.code ("voice_uplink", "built_in")
+        // Call mic input: stored as CallMicConfig.code ("automatic", "voice_uplink"; legacy "built_in")
         private val KEY_CALL_MIC = stringPreferencesKey("call_mic")
 
         // Call buffer: stored as CallBufferConfig.code ("low", "standard")
@@ -452,6 +472,9 @@ class AdapterConfigPreference private constructor(
         private const val SYNC_CACHE_KEY_CLUSTER_NAVIGATION = "cluster_navigation_enabled"
         private const val SYNC_CACHE_KEY_BACKGROUND_LOGO = "background_logo"
         private const val SYNC_CACHE_KEY_CALL_MIC = "call_mic"
+
+        // [235] Set once the pre-[235] call audio defaults were checked (see keepCallAudioSettingsOnUpgrade).
+        private const val SYNC_CACHE_KEY_CALL_AUDIO_DEFAULTS_CHECKED = "call_audio_defaults_checked_235"
         private const val SYNC_CACHE_KEY_CALL_BUFFER = "call_buffer"
         private const val SYNC_CACHE_KEY_HAS_COMPLETED_FIRST_INIT = "has_completed_first_init"
         private const val SYNC_CACHE_KEY_LAST_INIT_VERSION_CODE = "last_init_version_code"
@@ -1177,6 +1200,42 @@ class AdapterConfigPreference private constructor(
      * Check if first initialization has been completed.
      */
     fun hasCompletedFirstInitSync(): Boolean = syncCache.getBoolean(SYNC_CACHE_KEY_HAS_COMPLETED_FIRST_INIT, false)
+
+    /**
+     * [235] Call Mic and Echo Delay now default to not forcing anything (AUTOMATIC, NOT_SENT), to
+     * match upstream. An install that already ran a session keeps what it was using: the old
+     * defaults (VOICE_UPLINK, 740 ms) are saved explicitly when it never picked one. Runs once per
+     * install, before the first AdapterConfig is built; a fresh install just gets the new defaults.
+     * The sync cache is written at once (it feeds the startup config); DataStore follows on [scope].
+     */
+    fun keepCallAudioSettingsOnUpgrade(scope: CoroutineScope) {
+        if (syncCache.getBoolean(SYNC_CACHE_KEY_CALL_AUDIO_DEFAULTS_CHECKED, false)) return
+        val upgraded = hasCompletedFirstInitSync()
+        val keepMic = upgraded && !syncCache.contains(SYNC_CACHE_KEY_CALL_MIC)
+        val keepEcho = upgraded && !syncCache.contains(SYNC_CACHE_KEY_ECHO_DELAY)
+        syncCache
+            .edit()
+            .apply {
+                if (keepMic) putString(SYNC_CACHE_KEY_CALL_MIC, CallMicConfig.VOICE_UPLINK.code)
+                if (keepEcho) putInt(SYNC_CACHE_KEY_ECHO_DELAY, EchoDelayConfig.MS_740.delayMs)
+                putBoolean(SYNC_CACHE_KEY_CALL_AUDIO_DEFAULTS_CHECKED, true)
+            }.apply()
+        logInfo(
+            "[CALL_AUDIO] defaults check: upgrade=$upgraded keptCarCallPath=$keepMic kept740ms=$keepEcho",
+            tag = "AdapterConfig",
+        )
+        if (!keepMic && !keepEcho) return
+        scope.launch {
+            try {
+                dataStore.edit { preferences ->
+                    if (keepMic) preferences[KEY_CALL_MIC] = CallMicConfig.VOICE_UPLINK.code
+                    if (keepEcho) preferences[KEY_ECHO_DELAY] = EchoDelayConfig.MS_740.delayMs
+                }
+            } catch (e: IOException) {
+                logError("Failed to keep pre-[235] call audio settings: $e", tag = "AdapterConfig")
+            }
+        }
+    }
 
     /**
      * Mark first initialization as completed.

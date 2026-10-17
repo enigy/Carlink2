@@ -722,6 +722,8 @@ class MainActivity : ComponentActivity() {
 
         // Load user-configured adapter settings from sync cache (instant, no I/O blocking)
         // These are optional - only configured settings are sent to the adapter
+        // [235] Keep an upgraded install's call audio settings before the first config is read.
+        AdapterConfigPreference.getInstance(this).keepCallAudioSettingsOnUpgrade(CoroutineScope(Dispatchers.IO))
         val userConfig = AdapterConfigPreference.getInstance(this).getUserConfigSync()
 
         // Apply video resolution preference (must be before ViewArea/SafeArea construction)
@@ -820,7 +822,7 @@ class MainActivity : ComponentActivity() {
                     wifiType = wifiType,
                     callQuality = userConfig.callQuality.value,
                     mediaDelay = userConfig.mediaDelay.delayMs,
-                    echoDelay = userConfig.echoDelay.delayMs,
+                    echoDelay = userConfig.echoDelay.sentMs,
                     viewAreaData = viewAreaData,
                     safeAreaData = safeAreaData,
                     gpsForwarding = userConfig.gpsForwarding,
@@ -851,7 +853,7 @@ class MainActivity : ComponentActivity() {
                     "sampleRate=48000Hz (hardcoded), mic=$micType, wifi=$wifiType, " +
                     "callQuality=${userConfig.callQuality.name}, " +
                     "mediaDelay=${userConfig.mediaDelay.name}(${userConfig.mediaDelay.delayMs}ms), " +
-                    "echoDelay=${userConfig.echoDelay.delayMs}ms, " +
+                    "echoDelay=${userConfig.echoDelay.sentMs?.let { "${it}ms" } ?: "adapter's own"}, " +
                     "resolution=${userConfig.videoResolution.toStorageString()} (adapter: ${configWidth}x$configHeight)",
                 tag = "MAIN",
             )

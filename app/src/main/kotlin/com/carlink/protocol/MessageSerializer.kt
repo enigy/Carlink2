@@ -454,7 +454,9 @@ object MessageSerializer {
                 // [224] EchoLatency for the adapter's WebRTC AECM, read at each call's start. It
                 // covers echo (echoDelay − 200)..echoDelay ms after it sends audio; the GM round
                 // trip is ~640 ms, outside the default 320's 120–320 window.
-                put("echoDelay", config.echoDelay)
+                // [235] Only when the user picked one; otherwise the adapter keeps its own (its web
+                // page's setting), as upstream does.
+                config.echoDelay?.let { put("echoDelay", it) }
                 put("syncTime", actualSyncTime)
                 put("androidAutoSizeW", aaWidth)
                 put("androidAutoSizeH", aaHeight)

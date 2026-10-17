@@ -549,8 +549,9 @@ data class AdapterConfig(
     val boxName: String = "carlink",
     val mediaDelay: Int = 1000,
     /** [224] Adapter echo canceller delay (BoxSettings echoDelay → EchoLatency). It covers echo
-     *  arriving (value − 200)..value ms after the adapter sends audio; 320 is the firmware default. */
-    val echoDelay: Int = 320,
+     *  arriving (value − 200)..value ms after the adapter sends audio; 320 is the firmware default.
+     *  [235] null = not sent: the adapter keeps its own saved value. */
+    val echoDelay: Int? = null,
     /** Audio transfer mode: true=bluetooth, false=adapter (USB audio, default) */
     val audioTransferMode: Boolean = false,
     /** Sample rate for media audio (48000 Hz). Controls mediaSound in BoxSettings. */

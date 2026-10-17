@@ -1966,6 +1966,29 @@
      app/build.gradle.kts.
    - Released with [231] (not built on its own for Play).
 
+[235] :: Call audio stops forcing GM-specific choices by default; Call Mic = Automatic / Car call path; echo delay can be left to the adapter.
+   - Why: upstream review of PR #18 ([162], 2026-10-17). On lvalen91's 2024 Silverado 2500 (OS Y181B, latest audio
+     calibration) the plain VOICE_COMMUNICATION request already routes IN_BUILTIN_MIC → HAL pathName=Voice_Uplink with
+     GM's call ECNR (PhoneCall_Uplink), and he has no echo; on this truck the same request measured echo -30 dB and a
+     ~30 dB weaker voice ([223]/[224]), fixed only by forcing Voice_Uplink ([225]). Routing varies by OS build and
+     audio calibration, so the app shouldn't force one answer. He also notes the adapter's web page has an echo-delay
+     setting the app shouldn't overwrite; [224] sent echoDelay on every connect.
+   - Call Mic: AUTOMATIC (new default; = upstream and the pre-[225] "Built-in": VOICE_COMMUNICATION, no input named,
+     Android AEC/NS/AGC attached) or VOICE_UPLINK ("Car call path", forces the bus, no app effects). The old
+     "built_in" code reads as AUTOMATIC. A separate Built-in choice would have been the same path, so it's two.
+   - Echo Delay: NOT_SENT ("Adapter", new default) leaves echoDelay out of BoxSettings so the adapter keeps its saved
+     value; 320/640/740/840 are overrides. AdapterConfig.echoDelay is Int? (null = not sent); the echo monitor says so.
+   - Upgrade: AdapterConfigPreference.keepCallAudioSettingsOnUpgrade() runs once per install at startup. An install
+     that already completed a session and never picked a Call Mic / Echo Delay gets the old defaults saved
+     explicitly (Car call path, 740 ms), so this truck's calls don't change. Fresh installs get the new defaults.
+   - Logs: the file header adds "OS build: <Build.DISPLAY> (id, incremental)"; each call logs one [CALL_AUDIO] line
+     (Call Mic choice, forced input or "OS choice + app AEC/NS/AGC", whether the car lists Voice_Uplink, echoDelay
+     sent or adapter's own, OS build), followed by the existing [MIC] routed-device/effects lines.
+   - Call Buffer stays Low by default here (upstream PR would default Standard).
+   - Compiled here; unit tests pass. Not run on hardware.
+   - Affected: ui/settings/AdapterConfigPreference.kt, ui/settings/AdapterConfigurationDialog.kt, protocol/MessageTypes.kt,
+     protocol/MessageSerializer.kt, MainActivity.kt, CarlinkManager.kt, logging/FileLogManager.kt, app/build.gradle.kts.
+
 [234] :: Release of [232]+[233] for Play; tap-latency diagnostic made debug-only.
    - Merged branch tap-latency-fw-check into main: [232] tap diagnostic + adapter firmware-version check (Settings
      line, [FW_CHECK]) and [233] CarPlay always dark at session start + decoder-side tap timing.

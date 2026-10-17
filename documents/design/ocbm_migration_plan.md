@@ -108,6 +108,9 @@ guidance that the stock box never forwards. This removes the plan's make-or-brea
 
 ## Evaluation: a new-repo fork of `host/CarlinkAndroid`, structured like Carlink2 (added 2026-10-17)
 
+> **Decided 2026-10-17: the fork is `Carlink3`** — repo `Carlink3`, applicationId `com.enigy.carlink3`.
+> Carlink2 (this repo) stays on the stock/v5 firmware path and is not changed by this work.
+
 **Verdict: good fit, and the two hard requirements are already solved by code we own.** Carlink2's
 bridge split is the *device-proven* form of what OCBM only prototyped. OCBM's `:usbhandler` module is a
 throwaway proof of the `android.car.usb.handler` silent grant, explicitly "NOT device-tested" and with

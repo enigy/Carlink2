@@ -1966,6 +1966,18 @@
      app/build.gradle.kts.
    - Released with [231] (not built on its own for Play).
 
+[234] :: Release of [232]+[233] for Play; tap-latency diagnostic made debug-only.
+   - Merged branch tap-latency-fw-check into main: [232] tap diagnostic + adapter firmware-version check (Settings
+     line, [FW_CHECK]) and [233] CarPlay always dark at session start + decoder-side tap timing.
+   - Context: the CarPlay transition lag cleared after the driver rebooted the iPhone (on [231]); the diagnostics
+     stay for future use, CarPlay always-dark is kept at the driver's request.
+   - [TAP_DIAG] is now debug-only: CarlinkManager arms the window (and H264Renderer's trace) only when
+     Logger.isDebugLoggingEnabled() (Settings → Logs → Debug preset, or the other diagnostic presets), and all
+     [TAP_DIAG] lines log at DEBUG under ADAPTR. Under Normal nothing is armed — no per-frame work or lines.
+     Previously INFO, ~360 lines per tap at any level. [FW_CHECK] stays INFO (one line per connect).
+   - Compiled here; unit tests pass. [233]'s night command not yet seen on hardware.
+   - Affected: CarlinkManager.kt, video/H264Renderer.java, app/build.gradle.kts.
+
 [233] :: CarPlay always dark (night command at session start) + decoder-side tap timing.
    - CarPlay dock/UI stayed light after [231]: with no signal from the car, CarPlay's "Automatic" appearance
      follows daylight. CarlinkManager.requestCarPlayNight() now sends ENABLE_NIGHT_MODE (16) when a CarPlay

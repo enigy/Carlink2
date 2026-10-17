@@ -1140,8 +1140,9 @@ public class H264Renderer {
     }
 
     private static void tapTraceLog(String message) {
-        // INFO under ADAPTR so it survives release log filtering, same as CarlinkManager's lines.
-        Logger.INSTANCE.i(message, Logger.Tags.ADAPTR);
+        // [234] DEBUG under ADAPTR, like CarlinkManager's [TAP_DIAG] lines; the trace is only armed
+        // while debug logging is on.
+        Logger.INSTANCE.d(message, Logger.Tags.ADAPTR);
     }
 
     // H.264 NAL unit types (ITU-T H.264 Table 7-1)

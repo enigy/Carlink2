@@ -344,6 +344,8 @@ class CarlinkManager(
         // to the phone's video response: a gap in frames means the phone was slow to react;
         // frames still flowing means the stall is head-unit/display-side. Diagnostic only —
         // no behavior change, and the window is armed on DOWN, not re-armed on MOVE.
+        // [234] Debug-only: armed only while debug logging is on (Settings → Logs → Debug
+        // preset) and logged at DEBUG level, so the Normal preset pays nothing.
         private const val TAP_DIAG_WINDOW_NS = 3_000_000_000L
 
         // ---------------------------------------------------------------------------------
@@ -2176,8 +2178,9 @@ class CarlinkManager(
         val isAA = currentPhoneType == PhoneType.ANDROID_AUTO
         // [232] Tap-latency diagnostic: log DOWN/UP and arm the per-frame video log on DOWN.
         // Timestamped here, at the input moment, before the send hops to Dispatchers.IO.
+        // [234] Only while debug logging is on.
         touches.firstOrNull()?.let { primary ->
-            if (primary.action != MultiTouchAction.MOVE) {
+            if (primary.action != MultiTouchAction.MOVE && Logger.isDebugLoggingEnabled()) {
                 val nowNs = System.nanoTime()
                 if (primary.action == MultiTouchAction.DOWN) {
                     tapDiagStartNs = nowNs
@@ -2187,7 +2190,7 @@ class CarlinkManager(
                     // [233] Decoder side: per-frame staging wait and decode-to-display time.
                     h264Renderer?.armTapTrace(nowNs, TAP_DIAG_WINDOW_NS)
                 }
-                logInfo(
+                logDebug(
                     "[TAP_DIAG] ${primary.action} x=${"%.4f".format(primary.x)} y=${"%.4f".format(primary.y)} " +
                         "pointers=${touches.size} ${if (isAA) "AA" else "CarPlay"}",
                     tag = Logger.Tags.ADAPTR,
@@ -2247,8 +2250,9 @@ class CarlinkManager(
      * each inbound frame's arrival relative to the tap plus the gap since the previous frame,
      * then a one-line summary when the window closes. A gap after the press points at the phone
      * (slow to react); frames still flowing points at the head unit/display. Called per frame on
-     * the USB read thread; `logInfo` only enqueues (1 Hz async file flush), so it does not stall
-     * frame intake, and it is a no-op whenever no window is armed.
+     * the USB read thread; logging only enqueues (1 Hz async file flush), so it does not stall
+     * frame intake, and it is a no-op whenever no window is armed ([234]: never armed unless
+     * debug logging is on).
      */
     private fun logTapDiagnosticsFrame(dataLength: Int) {
         val tapUntil = tapDiagUntilNs
@@ -2258,13 +2262,13 @@ class CarlinkManager(
             val sinceTapMs = (nowNs - tapDiagStartNs) / 1_000_000L
             val gapMs = if (tapDiagLastFrameNs == 0L) 0L else (nowNs - tapDiagLastFrameNs) / 1_000_000L
             tapDiagLastFrameNs = nowNs
-            logInfo(
+            logDebug(
                 "[TAP_DIAG] +${sinceTapMs}ms frame#${++tapDiagFrameCount} len=$dataLength gap=${gapMs}ms",
                 tag = Logger.Tags.ADAPTR,
             )
         } else {
             tapDiagUntilNs = 0L
-            logInfo(
+            logDebug(
                 "[TAP_DIAG] window closed: $tapDiagFrameCount frames in " +
                     "${TAP_DIAG_WINDOW_NS / 1_000_000L}ms after tap",
                 tag = Logger.Tags.ADAPTR,

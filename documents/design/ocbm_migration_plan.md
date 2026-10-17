@@ -106,6 +106,60 @@ drops `maneuver` into `else -> Unit`. Everything a cluster trip needs is on the 
 **Net:** on OCBM the cluster/HUD keeps everything it has today, and gains exit numbers and lane
 guidance that the stock box never forwards. This removes the plan's make-or-break objection.
 
+## Evaluation: a new-repo fork of `host/CarlinkAndroid`, structured like Carlink2 (added 2026-10-17)
+
+**Verdict: good fit, and the two hard requirements are already solved by code we own.** Carlink2's
+bridge split is the *device-proven* form of what OCBM only prototyped. OCBM's `:usbhandler` module is a
+throwaway proof of the `android.car.usb.handler` silent grant, explicitly "NOT device-tested" and with
+no data path; Carlink2's bridge has run that grant in production since [200], *and* relays the adapter
+traffic over a socket so the display app stays an ordinary Play-shippable package. The cluster icon
+`ContentProvider` the Templates Host needs already lives in that bridge. So the fork doesn't have to
+invent the hard parts — it has to re-plumb them.
+
+**What the fork is made of**
+
+| Module | Source | Change |
+|---|---|---|
+| `:app` (display) | fork of `ocbm/host/CarlinkAndroid/app` | new applicationId; USB transport swapped for the bridge socket; Carlink2's `cluster/`, `navigation/`, Settings/Logs UI ported in |
+| `:bridge` | Carlink2 `bridge/` | made protocol-agnostic (raw bulk relay) — see below; `DISPLAY_PACKAGE`/pinned certs re-pointed at the new app |
+| `:bridge-api` | Carlink2 `bridge-api/` | AIDL unchanged in shape; `HEADER_SIZE`/message semantics drop out (raw stream) |
+| dropped | OCBM `:projection`, `:car-system-stubs`, `:usbhandler` | superseded (Pi target, system-API stubs we don't use, proof replaced by `:bridge`) |
+
+**The one real engineering seam: raw relay instead of message relay.** Today `UsbSession` in the bridge
+*understands* the stock protocol (reads the 16-byte header, then the payload) and emits whole messages.
+OCBM framing (envelope, CRC-32, `Reassembler`) lives in the app's `OcbmClient`, which only asks its
+transport for an interface — `RawBulkTransport { writeBulk(bytes); start(); stop(); + inbound bytes }`.
+So: (a) the bridge's pump becomes a dumb bulk-IN → socket / `write()` → bulk-OUT byte relay with no
+header knowledge; (b) the app gets a `SocketBulkTransport : RawBulkTransport` wrapping the
+`ParcelFileDescriptor` the bridge hands back, in place of `UsbBulkTransport`. Both are small, and
+`OcbmClient` is untouched. Throughput is not a new risk: this same socket already carries H.264
+2400×960@60 (13–23 Mbps measured); HEVC is lower bitrate for the same picture.
+
+**Permission behaviour carries over, with one thing to re-verify.** Silent grant on attach, one-tap
+prompt for a boot-time attach, and the "adapter re-plugs itself so the bridge gets a silent grant"
+recovery ([205]/[208]) all come with the bridge. The last one leaned on the stock firmware's
+`AutoResetUSB`; OCBM's userspace enumerates differently (`0x1314:0x2d00`, and its own reboot/USB-reset
+behaviour), so the boot-attach path needs an on-truck check.
+
+**Protocol sync is the maintenance cost.** `OcbmProto.kt` is a hand-maintained fork of the Rust canonical
+`crates/ocbm-proto`; OCBM guards it with `tools/proto_check.py`, which by design checks only clients
+inside *its* repo and rejects external paths. A separate repo loses that guard. Mitigation: vendor
+`ocbm-proto/src/lib.rs` as a reference copy, carry an adapted `proto_check.py` in CI, and bump both
+when tracking a new OCBM box release. The box firmware keeps moving; the client must follow it.
+
+**Licensing:** both OCBM and Carlink2 are Unlicense (public domain). No obstacle; keep a `NOTICE.md`
+recording provenance the way OCBM does.
+
+**Scope that is *not* changed by the fork:** the box still runs lvalen91's OCBM userspace, installed and
+recovered per his docs; the two Rust-side gaps (junction angles, ExitInfo selector 3) remain PRs to him.
+
+**Suggested first milestones (bench adapter, no truck):**
+1. Repo scaffold with the four modules above; `:app` builds as a renamed OCBM client; `proto_check` green.
+2. Raw-relay bridge + `SocketBulkTransport`; OCBM hello/heartbeat over the bridge on the bench box.
+3. Full CarPlay session (HEVC) through the bridge.
+4. Port `cluster/` + `navigation/` with the OCBM-JSON mapper; Templates Host cluster trip on the bench.
+5. Truck: silent USB grant on attach, boot-attach path, HUD icons.
+
 ## Authorization note
 
 OCBM is explicitly scoped by its author to a **licensed Apple/MFi developer doing ordinary accessory

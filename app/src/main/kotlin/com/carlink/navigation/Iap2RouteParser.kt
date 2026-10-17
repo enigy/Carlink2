@@ -42,6 +42,8 @@ object Iap2RouteParser {
     private const val FIELD_FLAG_9 = 0x0009
     private const val FIELD_JUNCTION_ANGLE = 0x000a
     private const val FIELD_EXIT_ANGLE = 0x000b
+    private const val FIELD_LINKED_LANE_GUIDANCE = 0x000c // [236] uint16, recognized but unused
+    private const val FIELD_EXIT_INFO = 0x000d // [236] utf8 exit label; see Iap2ManeuverData
 
     /**
      * cpManeuverType for `rampOff` — a highway/interstate exit. See ManeuverMapper's `8 ->` branch.
@@ -178,6 +180,7 @@ object Iap2RouteParser {
         var flag9 = 0
         val entryAngles = mutableListOf<Int>()
         var exitAngle: Int? = null
+        var exitInfo: String? = null
 
         // [198] Every TLV's (fieldId, valueStart, valueEnd), recorded as offsets into `bytes` —
         // no copying, so this costs nothing on the maneuvers we don't dump. cpManeuverType can
@@ -211,6 +214,8 @@ object Iap2RouteParser {
                 FIELD_FLAG_9 -> if (valueLen >= 1) flag9 = bytes.u8(valueStart)
                 FIELD_JUNCTION_ANGLE -> if (valueLen >= 2) entryAngles.add(bytes.i16BE(valueStart))
                 FIELD_EXIT_ANGLE -> if (valueLen >= 2) exitAngle = bytes.i16BE(valueStart)
+                FIELD_LINKED_LANE_GUIDANCE -> Unit // [236] known; nothing reads it yet
+                FIELD_EXIT_INFO -> exitInfo = readNulString(bytes, valueStart, valueEnd).takeIf { it.isNotEmpty() }
                 else -> {
                     logNavi {
                         "[NAVI_PARSER] Unknown field 0x${fieldId.toString(16).padStart(4, '0')} " +
@@ -226,6 +231,13 @@ object Iap2RouteParser {
         }
 
         if (cpManeuverType == CP_TYPE_RAMP_OFF) dumpRampTlvs(bytes, index, instructionText, rawTlvs)
+        if (exitInfo != null) {
+            // [236] INFO so the first drive that gets ExitInfo shows it in a release log.
+            logInfo(
+                "[EXIT_INFO] maneuver idx=$index cpType=$cpManeuverType exit='$exitInfo' instruction='$instructionText'",
+                tag = Logger.Tags.NAVI,
+            )
+        }
 
         return Iap2ManeuverData(
             index = index,
@@ -239,6 +251,7 @@ object Iap2RouteParser {
             flag9 = flag9,
             entryAngles = entryAngles.toList(),
             exitAngle = exitAngle,
+            exitInfo = exitInfo,
         ) to frameTotal
     }
 

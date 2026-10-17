@@ -42,6 +42,9 @@ data class NavigationState(
     // for the VCUNH1 cluster (see ManeuverMapper.roundaboutExitAngleAndroidx). Distinct from
     // [turnAngle]: nullable so "absent" is not confused with a genuine 0° (straight) exit.
     val exitAngle: Int? = null,
+    // [236] Highway exit label from iAP2 0x5202 field 0x000d (e.g. "273"); null until the adapter
+    // requests ExitInfo from the iPhone. Shown in the step cue ahead of the road name.
+    val exitInfo: String? = null,
     // Next-step fields — from firmware double-maneuver burst
     val nextManeuverType: Int? = null,
     val nextOrderType: Int? = null,
@@ -50,10 +53,36 @@ data class NavigationState(
     val nextJunctionType: Int? = null,
     val nextRoundaboutExit: Int? = null,
     val nextExitAngle: Int? = null,
+    val nextExitInfo: String? = null,
 ) {
+    /** [236] Cluster/HUD text for the approaching step: "Exit 273 · Wade Green Rd", or just the road. */
+    val stepCue: String? get() = exitCue(exitInfo, roadName)
+
+    /** [236] Same for the look-ahead step. */
+    val nextStepCue: String? get() = exitCue(nextExitInfo, nextRoadName)
+
     val isActive: Boolean get() = status == 1
     val isIdle: Boolean get() = status == 0
     val hasNextStep: Boolean get() = nextManeuverType != null
+
+    companion object {
+        /**
+         * [236] "Exit 273 · road" when an exit label is known, else the road name. A label that
+         * already reads "Exit …" is not prefixed again; the road is dropped when it only repeats it.
+         */
+        fun exitCue(
+            exitInfo: String?,
+            roadName: String?,
+        ): String? {
+            val exit = exitInfo?.trim()?.takeIf { it.isNotEmpty() } ?: return roadName
+            val label = if (exit.startsWith("exit", ignoreCase = true)) exit else "Exit $exit"
+            val road =
+                roadName?.trim()?.takeIf {
+                    it.isNotEmpty() && !it.equals(exit, ignoreCase = true) && !it.equals(label, ignoreCase = true)
+                }
+            return if (road == null) label else "$label · $road"
+        }
+    }
 }
 
 /**
@@ -464,6 +493,7 @@ object NavigationStateManager {
                 roundaboutExit = (payload["NaviRoundaboutExit"] as? Number)?.toInt() ?: current.roundaboutExit,
                 // CarPlay roundabout exit angle straight from the route plan's iAP2 0x000b field.
                 exitAngle = routeStep.exitAngle,
+                exitInfo = routeStep.exitInfo,
                 nextManeuverType = nextStep?.cpManeuverType,
                 nextOrderType = null,
                 nextRoadName = nextStep?.instructionText?.takeIf { it.isNotEmpty() } ?: nextStep?.postManeuverRoadName,
@@ -471,6 +501,7 @@ object NavigationStateManager {
                 nextJunctionType = null,
                 nextRoundaboutExit = null,
                 nextExitAngle = nextStep?.exitAngle,
+                nextExitInfo = nextStep?.exitInfo,
             )
             logNavi {
                 "[NAVI] V6_FIRED cursor=$localCursor/${routeV6.maneuvers.size}, maneuver=${mergedV6.maneuverType}, " +
@@ -610,6 +641,7 @@ object NavigationStateManager {
                     roundaboutExit = (payload["NaviRoundaboutExit"] as? Number)?.toInt() ?: current.roundaboutExit,
                     // CarPlay roundabout exit angle straight from the route plan's iAP2 0x000b field.
                     exitAngle = routeStep.exitAngle,
+                    exitInfo = routeStep.exitInfo,
                     nextManeuverType = nextStep?.cpManeuverType,
                     nextOrderType = null,
                     nextRoadName = nextStep?.instructionText?.takeIf { it.isNotEmpty() } ?: nextStep?.postManeuverRoadName,
@@ -617,6 +649,7 @@ object NavigationStateManager {
                     nextJunctionType = null,
                     nextRoundaboutExit = null,
                     nextExitAngle = nextStep?.exitAngle,
+                    nextExitInfo = nextStep?.exitInfo,
                 )
                 logNavi {
                     "[NAVI] Tier C state: cursor=$localCursor, maneuver=${mergedTierC.maneuverType}, road=${mergedTierC.roadName}, " +

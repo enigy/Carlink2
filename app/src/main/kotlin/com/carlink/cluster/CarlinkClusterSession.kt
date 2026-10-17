@@ -249,7 +249,7 @@ class CarlinkClusterScreen(
 
             val stepBuilder = Step.Builder()
             stepBuilder.setManeuver(maneuver)
-            state.roadName?.let { stepBuilder.setCue(it) }
+            state.stepCue?.let { stepBuilder.setCue(it) } // [236] exit label first when known
 
             val distance = DistanceFormatter.toDistance(state.remainDistance)
 

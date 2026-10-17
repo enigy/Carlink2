@@ -51,7 +51,8 @@ object TripBuilder {
         val maneuver = ManeuverMapper.buildManeuver(state, context)
         val stepBuilder = Step.Builder()
         stepBuilder.setManeuver(maneuver)
-        state.roadName?.let { stepBuilder.setCue(it) }
+        // [236] "Exit 273 · road" when the exit label is known, else the road name.
+        state.stepCue?.let { stepBuilder.setCue(it) }
 
         val stepEstimate =
             TravelEstimate
@@ -73,7 +74,7 @@ object TripBuilder {
                 )
             val nextStepBuilder = Step.Builder()
             nextStepBuilder.setManeuver(nextManeuver)
-            state.nextRoadName?.let { nextStepBuilder.setCue(it) }
+            state.nextStepCue?.let { nextStepBuilder.setCue(it) }
 
             val nextStepEstimate =
                 TravelEstimate

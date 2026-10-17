@@ -1969,7 +1969,8 @@
 [237] :: Test build combining [235] (call audio options) and [236] (ExitInfo), for one sideload.
    - Branch audio-exit-test = main ([234]) + call-audio-options + exit-info; the two touch separate files apart
      from the version and this file. No code changes of its own.
-   - Compiled here; unit tests pass. Not run on hardware.
+   - Compiled here; unit tests pass (47).
+   - Field result (sideload, 2026-10-17): calls and navigation checked out on the truck; merged and released to Play.
 
 [236] :: Read the highway exit label (iAP2 ExitInfo) and put it first in the cluster/HUD step text.
    - lvalen91 (XDA, 2026-10-17): ExitInfo is requested by selector 3 of the accessory's 0x5200

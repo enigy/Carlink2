@@ -16,8 +16,8 @@ package com.carlink.navigation
  *   0x0005 — distanceMeters (uint32 BE)
  *   0x0006 — distanceDisplayText (UTF-8, e.g. "0.2", "500", "1.5")
  *   0x0007 — distanceUnitFlag (1 byte: 0x04 ~ ft, 0x01 ~ mi/km, observed values)
- *   0x0008 — flagByte (1 byte, unknown semantics)
- *   0x0009 — flagByte (1 byte: 0x00 or 0x01, observed)
+ *   0x0008 — DrivingSide enum (1 byte) — Apple's name for it ([236], OCBM spec.rs from the CarPlay SDK)
+ *   0x0009 — JunctionType enum (1 byte: 0x00 or 0x01, observed) — Apple's name ([236])
  *   0x000a — junctionElementAngle (int16 BE, signed degrees). MULTI-OCCURRENCE on
  *            multi-spoke junctions — one entry per immediate non-traversed arm Apple's
  *            MKJunction chose to emit. EMPIRICAL CAVEAT: the wire format does NOT
@@ -29,6 +29,10 @@ package com.carlink.navigation
  *            Consumers computing arm count must use
  *            `max(entryAngles.size + 1, exitOrdinal + 1)` not raw `entryAngles.size + 1`.
  *   0x000b — junctionExitAngle (int16 BE, signed degrees). The chosen-exit arm's angle.
+ *   0x000c — LinkedLaneGuidanceInformation (uint16) — recognized, not used ([236]).
+ *   0x000d — ExitInfo (UTF-8) — the highway exit label, e.g. "273" ([236]). iOS only sends it when
+ *            the accessory's 0x5200 subscribe carries selector 3; the stock and v5 CCPA programs
+ *            don't yet (lvalen91, XDA 2026-10-17), so it is null until the adapter asks for it.
  *
  * Not all maneuvers carry every field. Roundabouts and complex multi-spoke intersections
  * carry 0x000a (often multiple times) + 0x000b; simple turns may carry only 0x000a once or
@@ -54,14 +58,16 @@ data class Iap2ManeuverData(
     val distanceDisplayText: String,
     /** Field 0x0007 — distance unit indicator (0x04 ~ feet, 0x01 ~ mi/km in observations). */
     val distanceUnitFlag: Int,
-    /** Field 0x0008 — semantic-unknown flag byte. */
+    /** Field 0x0008 — DrivingSide enum byte (kept under its pre-[236] name). */
     val flag8: Int,
-    /** Field 0x0009 — semantic-unknown flag byte. */
+    /** Field 0x0009 — JunctionType enum byte (kept under its pre-[236] name). */
     val flag9: Int,
     /** Field 0x000a (multi-occurrence) — junction spoke angles in degrees. May be empty for simple turns. */
     val entryAngles: List<Int>,
     /** Field 0x000b — chosen exit angle in degrees. Null if not present (simple turns, ramps, etc). */
     val exitAngle: Int?,
+    /** [236] Field 0x000d — highway exit label (e.g. "273", "12B"). Null until the adapter requests it. */
+    val exitInfo: String? = null,
 ) {
     /**
      * True when this maneuver has structured junction geometry (multi-spoke angle list).

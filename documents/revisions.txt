@@ -1966,6 +1966,33 @@
      app/build.gradle.kts.
    - Released with [231] (not built on its own for Play).
 
+[237] :: Test build combining [235] (call audio options) and [236] (ExitInfo), for one sideload.
+   - Branch audio-exit-test = main ([234]) + call-audio-options + exit-info; the two touch separate files apart
+     from the version and this file. No code changes of its own.
+   - Compiled here; unit tests pass. Not run on hardware.
+
+[236] :: Read the highway exit label (iAP2 ExitInfo) and put it first in the cluster/HUD step text.
+   - lvalen91 (XDA, 2026-10-17): ExitInfo is requested by selector 3 of the accessory's 0x5200
+     StartRouteGuidanceUpdates subscribe (bytes 00 04 00 03), which neither the stock CCPA iAP2 program nor
+     the v5 patch sends, so iOS never fills it. His OCBM tree's spec.rs (generated from Apple's CarPlay
+     Simulator SDK) gives the layout: 0x5202 param 13 ExitInfo is a plain utf8 string, not a group as our
+     RE docs assumed; param 12 is LinkedLaneGuidanceInformation (uint16); params 8/9 are DrivingSide and
+     JunctionType. Carlink2 already receives params 2-11 unchanged through v5 (Oct 16 drive: a cpType-8
+     exit arrived with fields 2-9), so 0x000d will pass straight through once the box asks for it.
+   - Iap2RouteParser: decodes 0x000d into Iap2ManeuverData.exitInfo (null when absent), treats 0x000c as
+     known/unused, and logs one INFO [EXIT_INFO] line per maneuver that carries it. NavigationState gets
+     exitInfo/nextExitInfo from the route step; stepCue/nextStepCue render "Exit 273 · Wade Green Rd"
+     (just the road when there is no exit label; no double "Exit" prefix; road dropped if it repeats the
+     label). TripBuilder and CarlinkClusterSession set the Step cue from those.
+   - Does nothing visible until the adapter's subscribe carries selector 3 — the [198] RAMP_TLV dump and
+     [NAVI_TLV_NEW] lines stay, so the first drive that gets it will show the raw bytes too. Asked lvalen91
+     whether renumbering the subscribe's unused SourceName selector (00 04 00 01 → 00 04 00 03) works as a
+     same-size v5 patch; the OCBM userspace itself is not usable with Carlink2 (different USB protocol).
+   - Compiled here; unit tests pass (parser frame with 0x000d, cue formatting). Not run on hardware.
+   - Affected: navigation/Iap2ManeuverData.kt, navigation/Iap2RouteParser.kt, navigation/NavigationStateManager.kt,
+     navigation/TripBuilder.kt, cluster/CarlinkClusterSession.kt, test/navigation/ExitInfoTest.kt (new),
+     app/build.gradle.kts.
+
 [235] :: Call audio stops forcing GM-specific choices by default; Call Mic = Automatic / Car call path; echo delay can be left to the adapter.
    - Why: upstream review of PR #18 ([162], 2026-10-17). On lvalen91's 2024 Silverado 2500 (OS Y181B, latest audio
      calibration) the plain VOICE_COMMUNICATION request already routes IN_BUILTIN_MIC → HAL pathName=Voice_Uplink with

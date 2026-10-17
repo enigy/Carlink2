@@ -1966,6 +1966,25 @@
      app/build.gradle.kts.
    - Released with [231] (not built on its own for Play).
 
+[233] :: CarPlay always dark (night command at session start) + decoder-side tap timing.
+   - CarPlay dock/UI stayed light after [231]: with no signal from the car, CarPlay's "Automatic" appearance
+     follows daylight. CarlinkManager.requestCarPlayNight() now sends ENABLE_NIGHT_MODE (16) when a CarPlay
+     session reaches STREAMING, every session, regardless of AAOS day/night (unlike [160], which followed it and
+     sent DISABLE by day). Android Auto untouched. If CarPlay still shows light by day, the phone's own CarPlay
+     Settings → Appearance overrides the car signal.
+   - [232]'s v232 drive log (6:54 pm, 12 taps): the phone starts each transition 40-140 ms after finger-up and
+     frames reach Carlink2 on schedule (10-60 ms behind the adapter timestamps, no drops after the session's first
+     second), but the arriving stream itself is choppy during transitions (new picture every 50-100 ms, two bursts
+     with a ~150 ms freeze between), at lower bitrate (~9 Mbps) than smooth stretches (~13 Mbps). Missing piece:
+     head-unit decode/display time, added here.
+   - TAP_DIAG decoder side (H264Renderer): armTapTrace() on each DOWN; for frames arriving in the 3 s window the
+     feeder records the codec-queue time and the render thread logs "shown +<ms> arrived +<ms> wait=<staging ms>
+     dec=<queue-to-release ms> len=<bytes>", matched FIFO by PTS, then "decoder summary: shown avgDec maxDec
+     maxWait notShown stillHeld". A decoder holding frames until more input arrives shows as dec stretching to
+     the next arrival. StagedFrame carries an arrival timestamp; one small lock between feeder and render thread.
+   - Compiled here; unit tests pass. Not run on hardware. Sideload build, not for Play.
+   - Affected: CarlinkManager.kt, video/H264Renderer.java, ui/theme/Theme.kt (comment), app/build.gradle.kts.
+
 [232] :: Tap-latency diagnostic ([TAP_DIAG]) + adapter firmware-version check ([FW_CHECK], Settings line).
    - WHY: a few builds back the full-screen CarPlay view ↔ app-grid transition started stuttering and taking
      2-3 s to appear after the lower-left app button is pressed. The Oct 16 drive log (build 227) shows frame

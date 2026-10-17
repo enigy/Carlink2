@@ -15,6 +15,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 
+import com.carlink.logging.Logger;
 import com.carlink.util.AppExecutors;
 import com.carlink.util.LogCallback;
 
@@ -49,6 +50,8 @@ public class H264Renderer {
     private static final class StagedFrame {
         final byte[] data;
         int length;
+        // [233] System.nanoTime() when feedDirect staged it (tap-latency trace only).
+        long arrivalNs;
         StagedFrame(int capacity) {
             this.data = new byte[capacity];
         }
@@ -179,6 +182,30 @@ public class H264Renderer {
     // now that the pool is reused instead of reallocated).
     private volatile int stagingGeneration = 0;
     private volatile Thread feederThread;
+
+    // [233] Tap-latency trace, decoder side. CarlinkManager arms it on a touch DOWN
+    // (armTapTrace). For frames that ARRIVE inside the window, the feeder records when each was
+    // handed to the codec; the render thread then logs, per frame, how long it waited in staging
+    // and how long the decoder held it before releasing it to the Surface. A decoder that holds
+    // frames until more input arrives shows up as dec times stretching to the next arrival.
+    // One lock: one writer (feeder), one reader (render thread), at most ~60 Hz each.
+    private static final int TAP_TRACE_SLOTS = 256;
+    private final Object tapTraceLock = new Object();
+    private final long[] tapTracePts = new long[TAP_TRACE_SLOTS];
+    private final long[] tapTraceArrivalNs = new long[TAP_TRACE_SLOTS];
+    private final long[] tapTraceFedNs = new long[TAP_TRACE_SLOTS];
+    private final int[] tapTraceLen = new int[TAP_TRACE_SLOTS];
+    private int tapTraceHead = 0;    // next write slot; guarded by tapTraceLock
+    private int tapTraceCount = 0;   // fed, not yet shown; guarded by tapTraceLock
+    private volatile long tapTraceStartNs = 0L;
+    private volatile long tapTraceUntilNs = 0L;
+    // Per-window stats; guarded by tapTraceLock.
+    private boolean tapTraceSummaryPending = false;
+    private int tapTraceShown = 0;
+    private int tapTraceNotShown = 0;
+    private long tapTraceDecSumMs = 0;
+    private long tapTraceDecMaxMs = 0;
+    private long tapTraceWaitMaxMs = 0;
     private volatile Thread renderThread;
     private final AtomicLong stagingDropCount = new AtomicLong(0);
     private final AtomicLong oversizedDropCount = new AtomicLong(0);
@@ -793,6 +820,7 @@ public class H264Renderer {
 
                     lastFeedTime = System.currentTimeMillis();
                     feedSuccesses.incrementAndGet();
+                    traceFed(pts, frame);
 
                     if (count == 0) {
                         // Start render thread on first frame (matching Autokit)
@@ -918,6 +946,7 @@ public class H264Renderer {
                         } catch (Exception e) {
                             // Ignore release errors
                         }
+                        traceShown(bufferInfo.presentationTimeUs);
 
                         // Inner polling loop: drain all available output buffers without
                         // blocking. An exception here propagates to the outer catch below
@@ -1013,6 +1042,106 @@ public class H264Renderer {
             if (cached[i] != data[dataOffset + i]) return false;
         }
         return true;
+    }
+
+    /**
+     * [233] Arm the decoder-side tap trace for frames arriving within {@code windowNs} of
+     * {@code nowNs} (System.nanoTime of the touch DOWN). Logs the previous window's summary
+     * first if it never drained. Diagnostic only; the video path itself is unchanged.
+     */
+    public void armTapTrace(long nowNs, long windowNs) {
+        String pending;
+        synchronized (tapTraceLock) {
+            pending = takeTapTraceSummaryLocked();
+            tapTraceHead = 0;
+            tapTraceCount = 0;
+            tapTraceShown = 0;
+            tapTraceNotShown = 0;
+            tapTraceDecSumMs = 0;
+            tapTraceDecMaxMs = 0;
+            tapTraceWaitMaxMs = 0;
+            tapTraceSummaryPending = true;
+            tapTraceStartNs = nowNs;
+            tapTraceUntilNs = nowNs + windowNs;
+        }
+        if (pending != null) tapTraceLog(pending);
+    }
+
+    /** [233] Feeder: record a traced frame just queued to the codec. */
+    private void traceFed(long pts, StagedFrame frame) {
+        long until = tapTraceUntilNs;
+        if (until == 0L) return;
+        long arrival = frame.arrivalNs;
+        if (arrival < tapTraceStartNs || arrival > until) return;
+        long fedNs = System.nanoTime();
+        synchronized (tapTraceLock) {
+            if (tapTraceCount == TAP_TRACE_SLOTS) return;  // drop the record, never the frame
+            int i = tapTraceHead;
+            tapTracePts[i] = pts;
+            tapTraceArrivalNs[i] = arrival;
+            tapTraceFedNs[i] = fedNs;
+            tapTraceLen[i] = frame.length;
+            tapTraceHead = (i + 1) % TAP_TRACE_SLOTS;
+            tapTraceCount++;
+        }
+    }
+
+    /**
+     * [233] Render thread: match a released output to its traced input (FIFO, by PTS; the PTS is
+     * millisecond-grained so equal values resolve oldest-first) and log its timing. Inputs ahead
+     * of the match that never came out are counted as not shown.
+     */
+    private void traceShown(long outPts) {
+        if (tapTraceStartNs == 0L) return;
+        long nowNs = System.nanoTime();
+        String line = null;
+        String summary = null;
+        synchronized (tapTraceLock) {
+            if (tapTraceCount > 0) {
+                int tail = (tapTraceHead - tapTraceCount + TAP_TRACE_SLOTS) % TAP_TRACE_SLOTS;
+                int skipped = -1;
+                for (int k = 0; k < tapTraceCount; k++) {
+                    if (tapTracePts[(tail + k) % TAP_TRACE_SLOTS] == outPts) {
+                        skipped = k;
+                        break;
+                    }
+                }
+                if (skipped >= 0) {
+                    int i = (tail + skipped) % TAP_TRACE_SLOTS;
+                    tapTraceNotShown += skipped;
+                    tapTraceCount -= skipped + 1;
+                    long arrivedMs = (tapTraceArrivalNs[i] - tapTraceStartNs) / 1_000_000L;
+                    long shownMs = (nowNs - tapTraceStartNs) / 1_000_000L;
+                    long waitMs = (tapTraceFedNs[i] - tapTraceArrivalNs[i]) / 1_000_000L;
+                    long decMs = (nowNs - tapTraceFedNs[i]) / 1_000_000L;
+                    tapTraceShown++;
+                    tapTraceDecSumMs += decMs;
+                    tapTraceDecMaxMs = Math.max(tapTraceDecMaxMs, decMs);
+                    tapTraceWaitMaxMs = Math.max(tapTraceWaitMaxMs, waitMs);
+                    line = "[TAP_DIAG] shown +" + shownMs + "ms arrived +" + arrivedMs + "ms wait=" + waitMs
+                            + "ms dec=" + decMs + "ms len=" + tapTraceLen[i]
+                            + (skipped > 0 ? " notShownBefore=" + skipped : "");
+                }
+            }
+            if (tapTraceCount == 0 && nowNs > tapTraceUntilNs) summary = takeTapTraceSummaryLocked();
+        }
+        if (line != null) tapTraceLog(line);
+        if (summary != null) tapTraceLog(summary);
+    }
+
+    /** [233] One-line decoder summary for the current window, once; null if already taken. */
+    private String takeTapTraceSummaryLocked() {
+        if (!tapTraceSummaryPending) return null;
+        tapTraceSummaryPending = false;
+        long avg = tapTraceShown == 0 ? 0 : tapTraceDecSumMs / tapTraceShown;
+        return "[TAP_DIAG] decoder summary: shown=" + tapTraceShown + " avgDec=" + avg + "ms maxDec="
+                + tapTraceDecMaxMs + "ms maxWait=" + tapTraceWaitMaxMs + "ms notShown=" + tapTraceNotShown
+                + " stillHeld=" + tapTraceCount;
+    }
+
+    private static void tapTraceLog(String message) {
+        // INFO under ADAPTR so it survives release log filtering, same as CarlinkManager's lines.
+        Logger.INSTANCE.i(message, Logger.Tags.ADAPTR);
     }
 
     // H.264 NAL unit types (ITU-T H.264 Table 7-1)
@@ -1119,6 +1248,7 @@ public class H264Renderer {
         // The only real work: memcpy into pre-allocated buffer
         System.arraycopy(data, offset, wf.data, 0, length);
         wf.length = length;
+        wf.arrivalNs = System.nanoTime();
 
         // FIFO enqueue — feeder thread drains in order
         if (stagingOffer(wf)) {

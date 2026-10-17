@@ -2184,6 +2184,8 @@ class CarlinkManager(
                     tapDiagLastFrameNs = 0L
                     tapDiagFrameCount = 0
                     tapDiagUntilNs = nowNs + TAP_DIAG_WINDOW_NS
+                    // [233] Decoder side: per-frame staging wait and decode-to-display time.
+                    h264Renderer?.armTapTrace(nowNs, TAP_DIAG_WINDOW_NS)
                 }
                 logInfo(
                     "[TAP_DIAG] ${primary.action} x=${"%.4f".format(primary.x)} y=${"%.4f".format(primary.y)} " +
@@ -2226,6 +2228,18 @@ class CarlinkManager(
                 driver.sendMultiTouch(touches)
             }
         }
+    }
+
+    /**
+     * [233] Ask CarPlay for its night (dark) appearance at every session start. Carlink2's own UI
+     * is permanently dark; with no signal from the car, CarPlay's "Automatic" appearance goes
+     * light by day. Unlike upstream [160] (reverted in [231]) this does not follow AAOS's day/night
+     * state — it always asks for night. Off the USB read thread, like [160]'s setNightMode.
+     */
+    private fun requestCarPlayNight() {
+        val driver = adapterDriver ?: return
+        logInfo("[NIGHT] session start → ENABLE_NIGHT_MODE (always dark)", tag = Logger.Tags.ADAPTR)
+        scope.launch(Dispatchers.IO) { driver.sendCommand(CommandMapping.ENABLE_NIGHT_MODE) }
     }
 
     /**
@@ -3034,6 +3048,7 @@ class CarlinkManager(
                     lastStreamingStartMs = System.currentTimeMillis()
                     setState(State.STREAMING)
                     setStatusText("Streaming")
+                    if (currentPhoneType == PhoneType.CARPLAY) requestCarPlayNight()
 
                     if (currentPhoneType == PhoneType.ANDROID_AUTO) {
                         // AA needs one keyframe request at session start to stabilize video.

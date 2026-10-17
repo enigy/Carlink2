@@ -21,7 +21,8 @@ import androidx.core.view.WindowCompat
 // (confirmed live: forcing system night mode on made the leak disappear). Don't reintroduce a
 // light/system-following scheme without also auditing every `MaterialTheme.colorScheme.*` use.
 // ([231] Upstream [160]'s forwarding of this signal to CarPlay as the night-mode command was
-// reverted; CarPlay decides its own day/night appearance again.)
+// reverted. [233] CarlinkManager instead always asks CarPlay for night at session start, so
+// CarPlay stays dark to match this theme regardless of AAOS's day/night state.)
 
 /**
  * Dark color scheme chosen for this project; no automotive-specific luminance/glare tuning

@@ -1966,6 +1966,26 @@
      app/build.gradle.kts.
    - Released with [231] (not built on its own for Play).
 
+[239] :: Steering-wheel Next/Back work when GM has not picked Carlink2 as its source (GM's F7/F8 keys); media keys logged.
+   - GM's steering-wheel skip buttons send KEYCODE_F7 (Next) and KEYCODE_F8 (Back), not MEDIA_NEXT/PREVIOUS. With
+     Carlink2 selected as GM's audio source, GM turns a press into a skip command (com.gm.rhmi -> onSkipToNext, as on
+     10-16). Otherwise the raw key reaches the media session from "android", and Media3's default ignores F7/F8, so the
+     press did nothing. Found with Carlink3's key logging (its v31 drive log, 10-23); which key is which confirmed on
+     the truck with Carlink3 v33.
+   - MediaSessionManager.onMediaButtonEvent handles F7/F8 only (the first press-down skips); every other key keeps
+     Media3's default handling. SkipGate keeps one skip per press should a press ever arrive both as GM's command and
+     as the raw key (500 ms window); presses arriving the same way are never dropped.
+   - Drive log: every media button with its sender and what it led to, e.g. "[MEDIA_SESSION] media key 137 down from
+     android -> NEXT", plus any dropped duplicate.
+   - Not ported: Carlink3 v34 (session PLAYING while music is audible; a seek is not a pause). Carlink2's adapter keeps
+     the session PLAYING across track changes (10-16: every track change logs "PLAYING (seek, ...)", and each PAUSED
+     matches an AUDIO_MEDIA_STOP), so the bug v34 fixed does not occur here.
+   - Checked on the builder with Gradle 9.6.1 in the staged copy (the builder does not have 9.8.1 yet): unit tests pass
+     (53, 6 new); ktlint and detekt report nothing in these files; Android lint fails only on its three earlier errors
+     (EchoTest.kt MissingPermission x2 from [224], bridge PermissionPrompt.kt from [205]). Not run on hardware.
+   - Affected: media/SteeringWheelKeys.kt (new), media/MediaSessionManager.kt, test media/SteeringWheelKeysTest.kt (new),
+     app/build.gradle.kts.
+
 [238] :: Ship lvalen91's NAV v6 ARMiPhoneIAP2 so the adapter asks iOS for ExitInfo.
    - assets/ARMiPhoneIAP2.patched is now lvalen91's production ARMiPhoneIAP2.nav_v6.packed
      (CPC200-CCPA_resources @ c4a0115, md5 3079ae9361bd68dbca98dfda4cc3d105, 233996 B). It replaces
@@ -1978,6 +1998,7 @@
    - Unverified on the truck. Watch for "[EXIT_INFO] maneuver idx=… exit='…'" on a route with a numbered exit.
    - Affected: app/src/main/assets/ARMiPhoneIAP2.patched, MainActivity.kt and MessageTypes.kt (comments),
      app/build.gradle.kts.
+   - Released with [239] (not built on its own for Play).
 
 [237] :: Test build combining [235] (call audio options) and [236] (ExitInfo), for one sideload.
    - Branch audio-exit-test = main ([234]) + call-audio-options + exit-info; the two touch separate files apart

@@ -8,7 +8,10 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
+import android.view.KeyEvent
+import androidx.core.content.IntentCompat
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -36,6 +39,9 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 private const val TAG = "CARLINK_MEDIA"
+
+/** A skip arriving the other way within this long of the last one is the same press ([SkipGate]). */
+private const val SKIP_ECHO_MS = 500L
 
 /**
  * Cluster / system consumers that read album-art `content://` URIs from outside the
@@ -610,6 +616,37 @@ class MediaSessionManager(
         }
 
         /**
+         * Raw media-button KeyEvents. Only GM's steering-wheel skip keys (F7/F8, [SteeringWheelKeys])
+         * are handled here: a press GM did not turn into a skip command arrives this way, and Media3's
+         * default ignores those keys. Every other key keeps Media3's default handling. Every press is
+         * logged with its sender, so a skip that does nothing shows up in the drive log.
+         */
+        override fun onMediaButtonEvent(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            intent: Intent,
+        ): Boolean {
+            val ev = IntentCompat.getParcelableExtra(intent, Intent.EXTRA_KEY_EVENT, KeyEvent::class.java)
+            if (ev == null) {
+                log("[MEDIA_SESSION] media button without a key from ${controller.packageName}")
+                return super.onMediaButtonEvent(session, controller, intent)
+            }
+            val next = SteeringWheelKeys.direction(ev.keyCode)
+            val fire = next != null && ev.action == KeyEvent.ACTION_DOWN && ev.repeatCount == 0
+            val outcome =
+                when {
+                    next == null -> "(Media3's default)"
+                    !fire -> "(nothing to do)"
+                    next == true -> "-> NEXT"
+                    else -> "-> BACK"
+                }
+            SteeringWheelKeys.line(ev.keyCode, ev.action, ev.repeatCount, controller.packageName, outcome)?.let { log(it) }
+            if (next == null) return super.onMediaButtonEvent(session, controller, intent)
+            if (fire) skip(next, SkipGate.Path.KEY)
+            return true
+        }
+
+        /**
          * Defensive sink for "play from media id" requests routed through Media3's
          * legacy bridge. On Silverado AAOS 12 the cluster's steering-wheel favorite
          * button (keycodes 137/138) reaches `GMMediaKeyService` which may dispatch
@@ -696,12 +733,26 @@ class MediaSessionManager(
         }
         override fun onSkipToNext() {
             log("[MEDIA_SESSION] onSkipToNext received")
-            mediaControlCallback?.onSkipToNext()
+            skip(next = true, SkipGate.Path.COMMAND)
         }
         override fun onSkipToPrevious() {
             log("[MEDIA_SESSION] onSkipToPrevious received")
-            mediaControlCallback?.onSkipToPrevious()
+            skip(next = false, SkipGate.Path.COMMAND)
         }
+    }
+
+    private val skipGate = SkipGate(SKIP_ECHO_MS)
+
+    /** Skip once per press ([SkipGate]); a duplicate of the press just sent is logged and dropped. */
+    private fun skip(
+        next: Boolean,
+        path: SkipGate.Path,
+    ) {
+        if (!skipGate.allow(next, path, SystemClock.elapsedRealtime())) {
+            log("[MEDIA_SESSION] skip ${if (next) "next" else "back"} by ${path.name.lowercase()} dropped: same press as the skip just sent")
+            return
+        }
+        if (next) mediaControlCallback?.onSkipToNext() else mediaControlCallback?.onSkipToPrevious()
     }
 
     /**

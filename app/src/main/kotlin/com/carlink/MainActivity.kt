@@ -698,7 +698,7 @@ class MainActivity : ComponentActivity() {
                 null
             }
 
-        // Load bundled patched ARMiPhoneIAP2 — pushed to adapter /tmp/bin on every init to
+        // Load bundled patched ARMiPhoneIAP2 (lvalen91 NAV v6: v5 + ExitInfo subscribe, [238]) — pushed to adapter /tmp/bin on every init to
         // preempt phone_link_deamon's first-spawn factory copy. 233 KiB, single SendFile.
         val patchedIap2BinaryBytes =
             try {

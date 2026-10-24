@@ -577,7 +577,8 @@ data class AdapterConfig(
      *  /tmp/aa_gps_fix.sh on every init (full + minimal) because adapter power-cycle
      *  between sessions wipes /tmp. Placement only — invocation is a separate step. */
     val gpsFixScriptData: ByteArray? = null,
-    /** Bundled patched ARMiPhoneIAP2 (NaviJSON _iap2 + _iap2m roundabout recovery).
+    /** Bundled patched ARMiPhoneIAP2, lvalen91 NAV v6 (NaviJSON _iap2 + _iap2m roundabout recovery, plus the
+     *  ExitInfo selector in the 0x5200 subscribe, [238]).
      *  Pushed to /tmp/bin/ARMiPhoneIAP2 on every init to preempt phone_link_deamon's
      *  factory-copy step, so the next CarPlay session execs our patched binary.
      *  Atomic rename means a session in progress is unaffected (running iAP2 keeps

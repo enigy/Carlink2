@@ -1966,6 +1966,19 @@
      app/build.gradle.kts.
    - Released with [231] (not built on its own for Play).
 
+[238] :: Ship lvalen91's NAV v6 ARMiPhoneIAP2 so the adapter asks iOS for ExitInfo.
+   - assets/ARMiPhoneIAP2.patched is now lvalen91's production ARMiPhoneIAP2.nav_v6.packed
+     (CPC200-CCPA_resources @ c4a0115, md5 3079ae9361bd68dbca98dfda4cc3d105, 233996 B). It replaces
+     nav_v5.packed (md5 80f97b149762f69d1683b9a2db879aa7), which this file had been byte-for-byte.
+   - v6 = v5 + one hook ("P1"): the accessory's 0x5200 StartRouteGuidanceUpdates appends selector 3
+     (SupportsExitInfo, 00 04 00 03), so iOS sends 0x5202 param 13 ExitInfo. Everything else is v5,
+     byte-identical apart from 123 bytes (his iap2_binary_patches.md §4.1). Device-verified by him on
+     2026-10-19 (ExitInfo present), deployed the same way Carlink2 does it: SendFile to /tmp/bin.
+   - [236] already parses 0x000d and puts "Exit N" first in the cluster/HUD step text, so no code change.
+   - Unverified on the truck. Watch for "[EXIT_INFO] maneuver idx=… exit='…'" on a route with a numbered exit.
+   - Affected: app/src/main/assets/ARMiPhoneIAP2.patched, MainActivity.kt and MessageTypes.kt (comments),
+     app/build.gradle.kts.
+
 [237] :: Test build combining [235] (call audio options) and [236] (ExitInfo), for one sideload.
    - Branch audio-exit-test = main ([234]) + call-audio-options + exit-info; the two touch separate files apart
      from the version and this file. No code changes of its own.
